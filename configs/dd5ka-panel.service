@@ -1,0 +1,15 @@
+[Unit]
+Description=DD-5KA · Panel (Flask Web UI)
+After=network.target
+
+[Service]
+User=nemez
+WorkingDirectory=/home/nemez/project_root/src/panel
+ExecStart=/home/nemez/drone-env/bin/python /home/nemez/project_root/src/panel/app.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+
