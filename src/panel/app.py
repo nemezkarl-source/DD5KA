@@ -1,7 +1,24 @@
+import logging
+import os
 from flask import Flask, Response
 
 def create_app():
     app = Flask(__name__)
+    
+    # Настройка логгера
+    log_dir = "/home/nemez/project_root/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler(f"{log_dir}/panel.log", mode='a'),
+        ]
+    )
+    
+    logger = logging.getLogger(__name__)
+    logger.info("panel started")
 
     @app.get("/healthz")
     def healthz():
