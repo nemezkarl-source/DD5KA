@@ -1,6 +1,6 @@
 import logging
 import os
-from flask import Flask, Response
+from flask import Flask, Response, jsonify
 
 def create_app():
     app = Flask(__name__)
@@ -23,6 +23,10 @@ def create_app():
     @app.get("/healthz")
     def healthz():
         return {"status": "ok"}, 200
+
+    @app.get("/api/last")
+    def last_event():
+        return jsonify({"last_event": None, "status": "idle"}), 200
 
     @app.get("/")
     def index():
