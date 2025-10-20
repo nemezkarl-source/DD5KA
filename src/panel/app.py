@@ -33,5 +33,5 @@ def create_app():
 if __name__ == "__main__":
     # Локальный запуск для разработки: python app.py
     app = create_app()
-    app.run(host="0.0.0.0", port=8098)
+    app.run(host="0.0.0.0", port=8098, debug=False, use_reloader=False)
 
