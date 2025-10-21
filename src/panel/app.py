@@ -1,6 +1,7 @@
 import logging
 import os
-from flask import Flask, Response, jsonify
+import subprocess
+from flask import Flask, Response, jsonify, send_file
 
 def create_app():
     app = Flask(__name__)
@@ -27,6 +28,30 @@ def create_app():
     @app.get("/api/last")
     def last_event():
         return jsonify({"last_event": None, "status": "idle"}), 200
+
+    @app.get("/api/snapshot")
+    def api_snapshot():
+        return jsonify({
+            "timestamp": None,
+            "label": None,
+            "confidence": None,
+            "image": None
+        }), 200
+
+    @app.get("/snapshot")
+    def snapshot():
+        try:
+            subprocess.run(
+                ["rpicam-still", "-o", "/dev/shm/dd5ka_snapshot.jpg", "--nopreview"],
+                timeout=4,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            logger.info("snapshot captured")
+            return send_file("/dev/shm/dd5ka_snapshot.jpg", mimetype="image/jpeg"), 200
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+            return jsonify({"error": "snapshot failed"}), 500
 
     @app.get("/")
     def index():
