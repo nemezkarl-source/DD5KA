@@ -31,6 +31,34 @@ def create_app():
     def last_event():
         return jsonify({"last_event": None, "status": "idle"}), 200
 
+    @app.get("/api/health")
+    def api_health():
+        logger.info("health check")
+        
+        # Check camera status
+        camera_status = "error"
+        try:
+            # Check if rpicam processes are running
+            result = subprocess.run(["pgrep", "-f", "rpicam"], 
+                                  capture_output=True, text=True, timeout=2)
+            if result.returncode == 0 and result.stdout.strip():
+                camera_status = "busy"
+            else:
+                # Check if media devices are accessible
+                try:
+                    with open("/dev/media0", "rb") as f:
+                        pass
+                    camera_status = "ok"
+                except (FileNotFoundError, PermissionError):
+                    camera_status = "error"
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+            camera_status = "error"
+        
+        return jsonify({
+            "camera": camera_status,
+            "detector": "unknown"
+        }), 200
+
     @app.get("/api/snapshot")
     def api_snapshot():
         return jsonify({
