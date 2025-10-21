@@ -1,0 +1,20 @@
+[Unit]
+Description=DD-5KA · CH4 Detector (stub)
+After=network-online.target dd5ka-panel.service
+Wants=network-online.target
+
+[Service]
+User=nemez
+Group=nemez
+WorkingDirectory=/home/nemez/project_root
+ExecStart=/home/nemez/drone-env/bin/python /home/nemez/project_root/src/detector/daemon.py
+Restart=always
+RestartSec=2
+Environment=PANEL_BASE_URL=http://127.0.0.1:8098
+Environment=DETECTOR_POLL_SEC=5
+Environment=LOG_DIR=/home/nemez/project_root/logs
+StandardOutput=append:/home/nemez/project_root/logs/detector.log
+StandardError=append:/home/nemez/project_root/logs/detector.log
+
+[Install]
+WantedBy=multi-user.target
