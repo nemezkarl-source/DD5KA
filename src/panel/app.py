@@ -142,10 +142,24 @@ def create_app():
 
     @app.get("/snapshot")
     def snapshot():
+        def soft_guard():
+            """Soft kill of rpicam processes"""
+            subprocess.run(["pkill", "-f", "/usr/bin/rpicam-vid"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-f", "rpicam-jpeg"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(["pkill", "-f", "/usr/bin/rpicam-still"], 
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        
+        # Soft guard before first attempt
+        soft_guard()
+        time.sleep(0.25)
+        
+        # First attempt
         try:
             subprocess.run(
-                ["/usr/bin/rpicam-still", "-t", "1", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
-                timeout=4,
+                ["/usr/bin/rpicam-still", "-t", "2", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
+                timeout=5,
                 check=True,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL
@@ -154,7 +168,24 @@ def create_app():
             return send_file("/dev/shm/dd5ka_snapshot.jpg", mimetype="image/jpeg"), 200
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.warning(f"snapshot failed: {type(e).__name__}")
-            return jsonify({"error": "snapshot failed"}), 500
+            
+            # Retry: soft guard again and retry
+            soft_guard()
+            time.sleep(0.3)
+            
+            try:
+                subprocess.run(
+                    ["/usr/bin/rpicam-still", "-t", "2", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
+                    timeout=5,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                logger.info("snapshot captured")
+                return send_file("/dev/shm/dd5ka_snapshot.jpg", mimetype="image/jpeg"), 200
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+                logger.warning(f"snapshot failed: {type(e).__name__}")
+                return jsonify({"error": "snapshot failed"}), 500
 
     @app.get("/stream")
     def stream():
