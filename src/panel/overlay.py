@@ -61,14 +61,26 @@ class OverlayStream:
             self.logger.warning(f"Failed to get snapshot: {e}")
             return None
     
-    def _draw_overlays_cv2(self, image_np: np.ndarray, detections: List[Dict]) -> np.ndarray:
+    def _draw_overlays_cv2(self, image_np: np.ndarray, detections: List[Dict], scale_x: float, scale_y: float) -> np.ndarray:
         """Draw detection overlays using OpenCV"""
         for det in detections:
             bbox = det.get("bbox_xyxy", [])
             conf = det.get("conf", 0.0)
             
             if len(bbox) == 4:
-                x1, y1, x2, y2 = map(int, bbox)
+                # Scale coordinates to current frame
+                x1 = int(bbox[0] * scale_x)
+                y1 = int(bbox[1] * scale_y)
+                x2 = int(bbox[2] * scale_x)
+                y2 = int(bbox[3] * scale_y)
+                
+                # Clamp to frame bounds
+                h, w = image_np.shape[:2]
+                x1 = max(0, min(x1, w-1))
+                y1 = max(0, min(y1, h-1))
+                x2 = max(0, min(x2, w-1))
+                y2 = max(0, min(y2, h-1))
+                
                 # Draw rectangle
                 cv2.rectangle(image_np, (x1, y1), (x2, y2), (0, 255, 0), 2)
                 # Draw text
@@ -76,7 +88,7 @@ class OverlayStream:
                 cv2.putText(image_np, text, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
         return image_np
     
-    def _draw_overlays_pil(self, image: Image.Image, detections: List[Dict]) -> Image.Image:
+    def _draw_overlays_pil(self, image: Image.Image, detections: List[Dict], scale_x: float, scale_y: float) -> Image.Image:
         """Draw detection overlays using PIL"""
         draw = ImageDraw.Draw(image)
         
@@ -91,7 +103,19 @@ class OverlayStream:
             conf = det.get("conf", 0.0)
             
             if len(bbox) == 4:
-                x1, y1, x2, y2 = map(int, bbox)
+                # Scale coordinates to current frame
+                x1 = int(bbox[0] * scale_x)
+                y1 = int(bbox[1] * scale_y)
+                x2 = int(bbox[2] * scale_x)
+                y2 = int(bbox[3] * scale_y)
+                
+                # Clamp to frame bounds
+                w, h = image.size
+                x1 = max(0, min(x1, w-1))
+                y1 = max(0, min(y1, h-1))
+                x2 = max(0, min(x2, w-1))
+                y2 = max(0, min(y2, h-1))
+                
                 # Draw rectangle
                 draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=2)
                 # Draw text
@@ -143,9 +167,18 @@ class OverlayStream:
                     # OpenCV path
                     image_np = cv2.imdecode(np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR)
                     if image_np is not None:
+                        # Calculate scale factors if we have detection event
+                        scale_x = scale_y = 1.0
+                        if detection_event and "image" in detection_event:
+                            evt_w = detection_event["image"].get("width", 1)
+                            evt_h = detection_event["image"].get("height", 1)
+                            frame_h, frame_w = image_np.shape[:2]
+                            scale_x = frame_w / evt_w
+                            scale_y = frame_h / evt_h
+                        
                         # Draw overlays
                         if detections:
-                            image_np = self._draw_overlays_cv2(image_np, detections)
+                            image_np = self._draw_overlays_cv2(image_np, detections, scale_x, scale_y)
                         
                         # Encode back to JPEG
                         _, jpeg_encoded = cv2.imencode('.jpg', image_np)
@@ -156,13 +189,22 @@ class OverlayStream:
                     # PIL path
                     image = Image.open(io.BytesIO(jpeg_data))
                     
+                    # Calculate scale factors if we have detection event
+                    scale_x = scale_y = 1.0
+                    if detection_event and "image" in detection_event:
+                        evt_w = detection_event["image"].get("width", 1)
+                        evt_h = detection_event["image"].get("height", 1)
+                        frame_w, frame_h = image.size
+                        scale_x = frame_w / evt_w
+                        scale_y = frame_h / evt_h
+                    
                     # Draw overlays
                     if detections:
-                        image = self._draw_overlays_pil(image, detections)
+                        image = self._draw_overlays_pil(image, detections, scale_x, scale_y)
                     
                     # Convert back to JPEG
                     output = io.BytesIO()
-                    image.save(output, format='JPEG', quality=85)
+                    image.save(output, format='JPEG', quality=70)
                     frame_data = output.getvalue()
                 
                 draw_time = int((time.time() - start_draw) * 1000)
@@ -171,7 +213,7 @@ class OverlayStream:
                 # Yield MJPEG frame
                 yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
                 
-                time.sleep(0.2)  # 5 FPS
+                time.sleep(0.3)  # 3-4 FPS
                 
             except Exception as e:
                 self.logger.warning(f"Overlay stream error: {e}")

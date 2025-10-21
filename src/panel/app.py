@@ -197,7 +197,7 @@ def create_app():
     @app.get("/snapshot")
     def snapshot():
         try:
-            max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "1600"))
+            max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "960"))
             jpeg_data = capture_jpeg(max_side=max_side)
             return Response(jpeg_data, mimetype="image/jpeg"), 200
         except Exception as e:

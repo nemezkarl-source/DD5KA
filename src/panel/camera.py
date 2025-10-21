@@ -11,7 +11,7 @@ import time
 from typing import Optional
 
 
-def capture_jpeg(max_side: int = 1280, timeout_ms: int = 800, retries: int = 2) -> bytes:
+def capture_jpeg(max_side: int = 1280, timeout_ms: int = 120, retries: int = 2) -> bytes:
     """
     Capture JPEG from camera with retries
     
@@ -28,9 +28,14 @@ def capture_jpeg(max_side: int = 1280, timeout_ms: int = 800, retries: int = 2) 
     """
     logger = logging.getLogger("panel.camera")
     
-    # Calculate dimensions for rpicam-still
-    # Use max_side as width, let driver calculate height maintaining aspect ratio
-    width = max_side
+    # Calculate dimensions for rpicam-still based on original aspect ratio
+    src_w, src_h = 4056, 3040  # Original camera resolution
+    if max(src_w, src_h) > max_side:
+        k = max_side / max(src_w, src_h)
+        w = int(src_w * k) // 2 * 2  # Even numbers for better encoding
+        h = int(src_h * k) // 2 * 2
+    else:
+        w, h = src_w, src_h
     
     for attempt in range(retries + 1):
         try:
@@ -42,9 +47,10 @@ def capture_jpeg(max_side: int = 1280, timeout_ms: int = 800, retries: int = 2) 
                 "-n",  # no preview
                 "-o", "-",  # output to stdout
                 "-t", str(timeout_ms),
-                "--quality", "85",
+                "--quality", "70",
                 "--thumb", "none",
-                "--width", str(width)
+                "--width", str(w),
+                "--height", str(h)
             ]
             
             # Execute capture
@@ -61,7 +67,7 @@ def capture_jpeg(max_side: int = 1280, timeout_ms: int = 800, retries: int = 2) 
                 raise ValueError(f"Invalid JPEG size: {len(result.stdout)} bytes")
             
             # Log success
-            logger.info(f"snapshot captured {width}×? in {capture_time}ms")
+            logger.info(f"snapshot captured {w}x{h} in {capture_time}ms")
             return result.stdout
             
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError) as e:
