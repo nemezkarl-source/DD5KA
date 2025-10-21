@@ -17,6 +17,16 @@
 Текущая цель этапа разработки:  
 стабильный запуск панели и детектора, логирование событий и корректная работа камеры.
 
+**CH5-start (CPU-инференс YOLO) — выполнено:**
+- Детектор работает на CPU (Ultralytics YOLO), события пишутся в `logs/detections.jsonl`.
+- Панель отдаёт оверлей поверх видеопотока: `GET /stream/overlay.mjpg` (порт :8098).
+- Схема события `detection` расширена полем `"perf"`.
+- Переключение бэкенда: `DD5KA_BACKEND=cpu`.
+
+## §1. Режим работы
+
+**Выполнение на RPi — только one-liner через ssh.** После каждого шага оператор отвечает «готово», затем следующий шаг. Контур неизменен: **Mac → GitHub → RPi (pull) → systemctl**.
+
 ## 2) Архитектура и окружение (общая фиксация)
 
 Аппаратная часть:
@@ -35,6 +45,16 @@
 - Каждый работает как systemd unit
 - Логи пишутся в отдельную директорию
 - Управление сервисами производится через `systemctl`
+
+## §3. Хостинг/пути/сервисы
+
+- Репозиторий: `/home/nemez/DD5KA`
+- Симлинк: `/home/nemez/project_root -> /home/nemez/DD5KA`
+- Venv: `/home/nemez/drone-env/bin/python`
+
+**Сервисы (systemd):**
+- `dd5ka-detector.service` — WorkingDirectory=`/home/nemez/project_root`, запускает `/home/nemez/project_root/src/detector/daemon.py`, лог: `/home/nemez/project_root/logs/detector.log`
+- `dd5ka-panel.service` — запускает `/home/nemez/project_root/src/panel/app.py`, лог: `/home/nemez/project_root/logs/panel.log`
 
 ## 3) Структура каталогов и важные пути (на Raspberry Pi)
 
@@ -64,6 +84,29 @@ markdown
 Расположение логов по умолчанию:
 `/home/nemez/project_root/logs/`
 
+## §4. Модель/артефакты
+
+**CPU-модель YOLO:** `/home/nemez/DD5KA/models/cpu/best.pt`  
+Каталоги создавать при отсутствии: `/home/nemez/DD5KA/models/cpu/`.
+
+## §5. ENV-переменные
+
+**Детектор (`dd5ka-detector.service`):**
+- `DD5KA_BACKEND=cpu|stub` — выбор бэкенда
+- `DETECTOR_MIN_CONF=float` — порог уверенности (деф. 0.55; на тестах 0.25–0.35)
+- `DETECTOR_CLASS_ALLOW=csv` — разрешённые имена (lower), напр. `dron,drone,дрон,uav`
+- `DETECTOR_CLASS_IDS=csv` — разрешённые ID классов (НАПР.: `0`), применяется ДО name-фильтра (AND-логика)
+- `IMG_MAX_SIDE=int` — макс. сторона кадра для инференса (деф. 1280; на тестах 1600)
+- `PANEL_BASE_URL=http://127.0.0.1:8098`, `DETECTOR_POLL_SEC=5`
+- `LOG_DIR=/home/nemez/project_root/logs`
+
+**Панель (`dd5ka-panel.service`):**
+- `SNAPSHOT_MAX_SIDE=int` — деф. 960 (длинная сторона)
+- `OVERLAY_MAX_SIDE=int` — деф. 640
+- `OVERLAY_FPS=int` — деф. 4 (частота отдачи кадров)
+- `OVERLAY_CAPTURE_FPS=int` — деф. 2 (частота реального захвата)
+- `OVERLAY_DET_MAX_AGE_MS=int` — деф. 4000 (макс. «возраст» события для отрисовки)
+
 ## 4) Переменные окружения и конфиги
 
 Файл с переменными: `configs/.env`  
@@ -86,6 +129,16 @@ PANEL_HOST=0.0.0.0
 PANEL_PORT=8098
 LOG_DIR=/home/nemez/project_root/logs
 DETECTIONS_JSONL=/home/nemez/project_root/logs/detections.jsonl
+
+## §6. Схема событий
+
+**Схема события detection (detections.jsonl):**
+
+`type: "detection"`, `backend: "cpu"`,  
+`model: { path, framework: "ultralytics", version: "auto" }`  
+`image: { width: <int>, height: <int> }` — размер кадра на инференсе  
+`detections: [{ class_id, class_name, conf, bbox_xyxy }]` — `class_name` нормализуется к `"drone"` для синонимов  
+`perf: { infer_ms: <int>, resized: [<w>, <h>] }`
 
 ## 5) Команды диагностики на Raspberry Pi
 
@@ -111,6 +164,36 @@ systemctl --no-pager --full status hailort.service || true
 
 ### Перезапуск сервисов
 sudo systemctl restart dd5ka-panel.service dd5ka-detector.service
+
+## §12. Диагностика
+
+# detector
+ssh nemez@<pi> 'systemctl --no-pager --full status dd5ka-detector.service'
+ssh nemez@<pi> 'journalctl -xeu dd5ka-detector.service -n 120 --no-pager'
+ssh nemez@<pi> 'tail -n 60 /home/nemez/DD5KA/logs/detections.jsonl'
+
+# panel
+ssh nemez@<pi> 'curl -sI http://127.0.0.1:8098/stream/overlay.mjpg | egrep -i "HTTP/|Content-Type"'
+ssh nemez@<pi> 'curl -s --max-time 5 http://127.0.0.1:8098/stream/overlay.mjpg -o /dev/null -w "bytes=%{size_download}\n"'
+ssh nemez@<pi> 'curl -s http://127.0.0.1:8098/api/last'
+
+# yolo
+ssh nemez@<pi> '/home/nemez/drone-env/bin/python -c "import ultralytics; print(ultralytics.__version__)"'
+ssh nemez@<pi> "/home/nemez/drone-env/bin/python -c \"import sys,os; p=os.path.abspath('/home/nemez/DD5KA/src'); sys.path.insert(0,p); import detector.yolo_cpu as m; print('ok', hasattr(m,'YOLOCPUInference'))\""
+
+## §13. Тюнинг/эксперименты
+
+- `DETECTOR_MIN_CONF` 0.25–0.50 — подобрать под задачу/освещение.
+- `IMG_MAX_SIDE` 960–1600 — больше размер = лучше мелкие цели, но медленнее.
+- `DETECTOR_CLASS_IDS=0` — надёжная фильтрация по ID для класса DRON.
+- Панель: `OVERLAY_MAX_SIDE=640..800`, `OVERLAY_CAPTURE_FPS=1..2` — снизить конкуренцию за камеру.
+
+## §14. Известные грабли
+
+- «Залипание» рамок: рисуем строго по **последнему** событию; пустые detections очищают экран; проверяем свежесть.
+- ImportError относительных импортов под systemd: добавляйте `src` в `sys.path`, используйте абсолютные импорты.
+- Поток есть, но bytes=0: генератор overlay обязан yield'ить кадры даже при сбое захвата (используем last_ok_frame/заглушку).
+- /snapshot 500: это временные сбои `rpicam-still` — работает retry-логика, не спамить запросами.
 
 ## 6) Протокол работы ИИ-ассистента
 
@@ -160,6 +243,14 @@ sudo systemctl restart dd5ka-panel.service dd5ka-detector.service
 7. Все изменения — пошагово, по протоколу «один ответ = одна правка + одна команда проверки».
 - Все команды, относящиеся к RPi, предоставляются в ssh-формате: `ssh nemez@<RPi_IP> '<команда>'` (рабочий терминал — Mac).
 - Стандартный первичный smoke-test связи сервисов: `/api/health` → `/snapshot` → `/api/last` (в указанной последовательности).
+
+**Чек-лист CH5:**
+- Проверить симлинк `/home/nemez/project_root -> /home/nemez/DD5KA`
+- Проверить модель: `/home/nemez/DD5KA/models/cpu/best.pt`
+- Выставить `DD5KA_BACKEND=cpu` (drop-in), перезапустить детектор
+- Убедиться: в `logs/detections.jsonl` идут `type:"detection"`
+- Проверить панель: `/snapshot` (200 и >10KB), `/api/last`, `/stream/overlay.mjpg` (200 и поток)
+- При ImportError относительных импортов под systemd — добавить `src` в `sys.path` и перейти на абсолютные импорты
 
 ## 8) Протокол передачи чата новому ассистенту
 
@@ -290,6 +381,67 @@ systemctl restart <service>
 7. Любой запрос «правь файл на Raspberry Pi» = нарушение протокола.
 
 ---
+
+## §8. Команды развёртывания
+
+**Mac → GitHub:**
+
+git add <files> && git commit -m "<msg>" && git push
+
+**RPi (pull):**
+
+ssh nemez@<pi> "cd /home/nemez/DD5KA && git pull"
+
+**RPi (env + restart, пример — детектор):**
+
+ssh nemez@<pi> 'sudo tee /etc/systemd/system/dd5ka-detector.service.d/override.conf >/dev/null <<EOF
+[Service]
+Environment=DD5KA_BACKEND=cpu
+Environment=DETECTOR_MIN_CONF=0.35
+Environment=DETECTOR_CLASS_ALLOW=dron,drone
+Environment=DETECTOR_CLASS_IDS=0
+Environment=IMG_MAX_SIDE=1600
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart dd5ka-detector.service'
+
+**RPi (env + restart, пример — панель):**
+
+ssh nemez@<pi> 'sudo tee /etc/systemd/system/dd5ka-panel.service.d/override.conf >/dev/null <<EOF
+[Service]
+Environment=SNAPSHOT_MAX_SIDE=960
+Environment=OVERLAY_MAX_SIDE=640
+Environment=OVERLAY_FPS=4
+Environment=OVERLAY_CAPTURE_FPS=2
+Environment=OVERLAY_DET_MAX_AGE_MS=4000
+EOF
+sudo systemctl daemon-reload && sudo systemctl restart dd5ka-panel.service'
+
+## §9. Фикс импортов под systemd
+
+**Фикс импортов при запуске через systemd:** в скриптах-энтрипоинтах добавлять `src` в `sys.path` и использовать абсолютные импорты.
+
+Применено:
+- `src/detector/daemon.py` → `sys.path` + `from detector.yolo_cpu import ...`
+- `src/panel/app.py` → `sys.path` + `from panel.overlay import ...`
+- Создавать `__init__.py` для пакетов при необходимости.
+
+## §10. Захват кадра (панель)
+
+Helper: `src/panel/camera.py`
+- `capture_jpeg(max_side, timeout_ms, retries)` вызывает `rpicam-still`:
+  `-n -o - -t <timeout_ms> --quality 70 --thumb none --width <w> --height <h>`
+- Размеры считаются по аспекту сенсора 4056×3040; ретраи при сбоях.
+
+## §11. Overlay-поток
+
+`GET /stream/overlay.mjpg`:
+- Кадр берётся напрямую через `panel.camera.capture_jpeg` (не через `/snapshot`).
+- Рисуем рамки по **последнему** событию `detections.jsonl`; пустые события очищают рамки.
+- Anti-stale: `event.ts` проверяется против `OVERLAY_DET_MAX_AGE_MS`.
+- Масштабирование bbox: из `event.image(w,h)` в `frame(w,h)`.
+- Разделены `OVERLAY_FPS` (отдача) и `OVERLAY_CAPTURE_FPS` (захват); используется `last_ok_frame`.
+- При отсутствии кадра — чёрная заглушка «NO FRAME».
+- Лог: `overlay frame: dets=<N>, age_ms=<int>, draw_ms=<int>, fresh=<True|False>`.
 
 ## 15) Интерфейс применения правок (обязательная последовательность)
 
