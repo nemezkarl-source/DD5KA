@@ -31,6 +31,11 @@ class DetectorDaemon:
         self.log_dir = os.getenv('LOG_DIR', 'logs')
         self.backend = os.getenv('DD5KA_BACKEND', 'stub')
         
+        # CPU inference parameters
+        self.min_conf = float(os.getenv('DETECTOR_MIN_CONF', '0.55'))
+        self.allow_classes = os.getenv('DETECTOR_CLASS_ALLOW', 'drone,dron,дрон,uav')
+        self.max_side = int(os.getenv('IMG_MAX_SIDE', '1280'))
+        
         # Ensure log directory exists
         os.makedirs(self.log_dir, exist_ok=True)
         
@@ -52,7 +57,12 @@ class DetectorDaemon:
         self.yolo_inference = None
         if self.backend == 'cpu':
             model_path = "/home/nemez/DD5KA/models/cpu/best.pt"
-            self.yolo_inference = YOLOCPUInference(model_path, self.logger)
+            self.yolo_inference = YOLOCPUInference(
+                model_path, self.logger, 
+                min_conf=self.min_conf,
+                allow_classes=self.allow_classes,
+                max_side=self.max_side
+            )
         
         # Signal handling
         signal.signal(signal.SIGINT, self._signal_handler)
