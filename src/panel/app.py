@@ -5,6 +5,7 @@ import subprocess
 import time
 from functools import partial
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context
+from .overlay import OverlayStream
 
 def create_app():
     app = Flask(__name__)
@@ -316,6 +317,16 @@ def create_app():
             )
         except FileNotFoundError:
             return jsonify({"error": "stream unavailable"}), 500
+
+    @app.get("/stream/overlay.mjpg")
+    def overlay_stream():
+        """MJPEG stream with detection overlays"""
+        overlay = OverlayStream(logger)
+        return Response(
+            stream_with_context(overlay.generate_frames()),
+            mimetype='multipart/x-mixed-replace; boundary=frame',
+            headers={'Cache-Control': 'no-store'}
+        )
 
     @app.get("/")
     def index():
