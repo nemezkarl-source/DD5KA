@@ -42,7 +42,7 @@ def create_app():
     def snapshot():
         try:
             subprocess.run(
-                ["rpicam-still", "-t", "1", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
+                ["/usr/bin/rpicam-still", "-t", "1", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
                 timeout=4,
                 check=True,
                 stdout=subprocess.DEVNULL,
