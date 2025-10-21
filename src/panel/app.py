@@ -2,10 +2,19 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from functools import partial
+from os.path import abspath, join, dirname
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context
-from .overlay import OverlayStream
+
+# Add src directory to sys.path for systemd execution
+# (systemd runs app.py as script, not as module)
+SRC_DIR = abspath(join(dirname(__file__), ".."))
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+from panel.overlay import OverlayStream
 
 def create_app():
     app = Flask(__name__)
