@@ -12,7 +12,15 @@ import sys
 import time
 import urllib.request
 from datetime import datetime
-from .yolo_cpu import YOLOCPUInference
+from os.path import abspath, join, dirname
+
+# Add src directory to sys.path for systemd execution
+# (systemd runs daemon.py as script, not as module)
+SRC_DIR = abspath(join(dirname(__file__), ".."))
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+from detector.yolo_cpu import YOLOCPUInference
 
 
 class DetectorDaemon:
