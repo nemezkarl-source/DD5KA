@@ -94,13 +94,50 @@ def create_app():
         # Check camera status
         camera_status = "error"
         try:
-            # Check if rpicam processes are running
+            # Get list of rpicam PIDs
             result = subprocess.run(["pgrep", "-f", "rpicam"], 
                                   capture_output=True, text=True, timeout=2)
             if result.returncode == 0 and result.stdout.strip():
-                camera_status = "busy"
+                pids = result.stdout.strip().split('\n')
+                is_busy = False
+                
+                for pid in pids:
+                    try:
+                        # Get command name
+                        comm_result = subprocess.run(["ps", "-o", "comm=", "-p", pid], 
+                                                   capture_output=True, text=True, timeout=1)
+                        if comm_result.returncode == 0:
+                            comm = comm_result.stdout.strip()
+                            if comm == "rpicam-vid":
+                                is_busy = True
+                                break
+                            
+                            # Get elapsed time
+                            etimes_result = subprocess.run(["ps", "-o", "etimes=", "-p", pid], 
+                                                         capture_output=True, text=True, timeout=1)
+                            if etimes_result.returncode == 0:
+                                try:
+                                    etimes = int(etimes_result.stdout.strip())
+                                    if etimes >= 2:
+                                        is_busy = True
+                                        break
+                                except ValueError:
+                                    pass
+                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
+                        continue
+                
+                if is_busy:
+                    camera_status = "busy"
+                else:
+                    # Check if media devices are accessible
+                    try:
+                        with open("/dev/media0", "rb") as f:
+                            pass
+                        camera_status = "ok"
+                    except (FileNotFoundError, PermissionError):
+                        camera_status = "error"
             else:
-                # Check if media devices are accessible
+                # No rpicam processes, check media devices
                 try:
                     with open("/dev/media0", "rb") as f:
                         pass
@@ -108,7 +145,13 @@ def create_app():
                 except (FileNotFoundError, PermissionError):
                     camera_status = "error"
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            camera_status = "error"
+            # Fallback to media device check
+            try:
+                with open("/dev/media0", "rb") as f:
+                    pass
+                camera_status = "ok"
+            except (FileNotFoundError, PermissionError):
+                camera_status = "error"
         
         # Check detector status
         detector_status = "stopped"
