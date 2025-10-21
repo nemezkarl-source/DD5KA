@@ -11,8 +11,8 @@ import time
 import io
 from typing import Optional, Dict, List
 import numpy as np
-import requests
 from PIL import Image, ImageDraw, ImageFont
+from .camera import capture_jpeg
 
 # Try to import OpenCV, fallback to PIL
 try:
@@ -26,8 +26,8 @@ class OverlayStream:
     def __init__(self, logger: logging.Logger):
         self.logger = logger
         self.detections_file = "/home/nemez/DD5KA/logs/detections.jsonl"
-        self.snapshot_url = "http://127.0.0.1:8098/snapshot"
         self.max_side = int(os.getenv('OVERLAY_MAX_SIDE', '1280'))
+        self.last_ok_frame: Optional[bytes] = None
         
     def _get_last_detection(self) -> Optional[Dict]:
         """Get last detection event from JSONL file"""
@@ -56,10 +56,7 @@ class OverlayStream:
     def _get_snapshot(self) -> Optional[bytes]:
         """Get snapshot JPEG data"""
         try:
-            response = requests.get(self.snapshot_url, timeout=3)
-            if response.status_code == 200:
-                return response.content
-            return None
+            return capture_jpeg(max_side=self.max_side)
         except Exception as e:
             self.logger.warning(f"Failed to get snapshot: {e}")
             return None
@@ -102,17 +99,26 @@ class OverlayStream:
                 draw.text((x1, y1-20), text, fill=(0, 255, 0), font=font)
         return image
     
-    def _resize_image(self, image: Image.Image) -> Image.Image:
-        """Resize image if needed"""
-        w, h = image.size
-        max_dim = max(w, h)
-        
-        if max_dim > self.max_side:
-            scale = self.max_side / max_dim
-            new_w = int(w * scale)
-            new_h = int(h * scale)
-            return image.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        return image
+    def _create_no_frame(self) -> bytes:
+        """Create black placeholder frame"""
+        if CV2_AVAILABLE:
+            # OpenCV path
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(img, "NO FRAME", (200, 240), cv2.FONT_HERSHEY_SIMPLEX, 2, (255, 255, 255), 3)
+            _, jpeg_encoded = cv2.imencode('.jpg', img)
+            return jpeg_encoded.tobytes()
+        else:
+            # PIL path
+            img = Image.new('RGB', (640, 480), (0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
+            except:
+                font = ImageFont.load_default()
+            draw.text((200, 200), "NO FRAME", fill=(255, 255, 255), font=font)
+            output = io.BytesIO()
+            img.save(output, format='JPEG', quality=85)
+            return output.getvalue()
     
     def generate_frames(self):
         """Generate MJPEG frames with overlays"""
@@ -120,15 +126,19 @@ class OverlayStream:
             try:
                 # Get snapshot
                 jpeg_data = self._get_snapshot()
-                if not jpeg_data:
-                    time.sleep(0.1)
-                    continue
+                if jpeg_data:
+                    self.last_ok_frame = jpeg_data
+                elif self.last_ok_frame:
+                    jpeg_data = self.last_ok_frame
+                else:
+                    jpeg_data = self._create_no_frame()
                 
                 # Get last detection
                 detection_event = self._get_last_detection()
                 detections = detection_event.get("detections", []) if detection_event else []
                 
                 # Process image
+                start_draw = time.time()
                 if CV2_AVAILABLE:
                     # OpenCV path
                     image_np = cv2.imdecode(np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR)
@@ -145,7 +155,6 @@ class OverlayStream:
                 else:
                     # PIL path
                     image = Image.open(io.BytesIO(jpeg_data))
-                    image = self._resize_image(image)
                     
                     # Draw overlays
                     if detections:
@@ -156,10 +165,13 @@ class OverlayStream:
                     image.save(output, format='JPEG', quality=85)
                     frame_data = output.getvalue()
                 
+                draw_time = int((time.time() - start_draw) * 1000)
+                self.logger.info(f"overlay frame: dets={len(detections)}, draw_ms={draw_time}")
+                
                 # Yield MJPEG frame
                 yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
                 
-                time.sleep(0.1)  # Small delay to prevent overwhelming
+                time.sleep(0.2)  # 5 FPS
                 
             except Exception as e:
                 self.logger.warning(f"Overlay stream error: {e}")

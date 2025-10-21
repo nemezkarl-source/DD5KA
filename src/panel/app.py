@@ -15,6 +15,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from panel.overlay import OverlayStream
+from panel.camera import capture_jpeg
 
 def create_app():
     app = Flask(__name__)
@@ -195,50 +196,13 @@ def create_app():
 
     @app.get("/snapshot")
     def snapshot():
-        def soft_guard():
-            """Soft kill of rpicam processes"""
-            subprocess.run(["pkill", "-f", "/usr/bin/rpicam-vid"], 
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["pkill", "-f", "rpicam-jpeg"], 
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run(["pkill", "-f", "/usr/bin/rpicam-still"], 
-                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        
-        # Soft guard before first attempt
-        soft_guard()
-        time.sleep(0.25)
-        
-        # First attempt
         try:
-            subprocess.run(
-                ["/usr/bin/rpicam-still", "-t", "2", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
-                timeout=5,
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            logger.info("snapshot captured")
-            return send_file("/dev/shm/dd5ka_snapshot.jpg", mimetype="image/jpeg"), 200
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-            logger.warning(f"snapshot failed: {type(e).__name__}")
-            
-            # Retry: soft guard again and retry
-            soft_guard()
-            time.sleep(0.3)
-            
-            try:
-                subprocess.run(
-                    ["/usr/bin/rpicam-still", "-t", "2", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
-                    timeout=5,
-                    check=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                logger.info("snapshot captured")
-                return send_file("/dev/shm/dd5ka_snapshot.jpg", mimetype="image/jpeg"), 200
-            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
-                logger.warning(f"snapshot failed: {type(e).__name__}")
-                return jsonify({"error": "snapshot failed"}), 500
+            max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "1600"))
+            jpeg_data = capture_jpeg(max_side=max_side)
+            return Response(jpeg_data, mimetype="image/jpeg"), 200
+        except Exception as e:
+            logger.warning(f"snapshot failed: {e}")
+            return jsonify({"error": "snapshot failed"}), 500
 
     @app.get("/stream")
     def stream():
