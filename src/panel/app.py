@@ -1,9 +1,4 @@
-import logging
-import os
-import subprocess
-import time
-from functools import partial
-from flask import Flask, Response, jsonify, send_file, stream_with_context, request
+from flask import Flask, Response
 
 def create_app():
     app = Flask(__name__)
@@ -29,7 +24,62 @@ def create_app():
 
     @app.get("/api/last")
     def last_event():
-        return jsonify({"last_event": None, "status": "idle"}), 200
+        LOGS_DIR = "/home/nemez/project_root/logs"
+        DETECTIONS_JSONL = f"{LOGS_DIR}/detections.jsonl"
+        
+        try:
+            # Read last non-empty line from end of file
+            with open(DETECTIONS_JSONL, 'rb') as f:
+                f.seek(0, 2)  # Go to end
+                file_size = f.tell()
+                
+                if file_size == 0:
+                    return jsonify({"event": None}), 200
+                
+                # Read backwards in blocks to find last non-empty line
+                buffer = b""
+                block_size = 8192
+                pos = file_size
+                
+                while pos > 0:
+                    read_size = min(block_size, pos)
+                    pos -= read_size
+                    f.seek(pos)
+                    chunk = f.read(read_size)
+                    buffer = chunk + buffer
+                    
+                    # Find last complete line
+                    lines = buffer.split(b'\n')
+                    if len(lines) > 1:
+                        # Check if last line is non-empty
+                        last_line = lines[-1].strip()
+                        if last_line:
+                            try:
+                                event = json.loads(last_line.decode('utf-8'))
+                                return jsonify({"event": event}), 200
+                            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                logger.warning(f"Failed to parse last event: {e}")
+                                return jsonify({"event": None}), 200
+                        else:
+                            # Last line is empty, check previous line
+                            for line in reversed(lines[:-1]):
+                                line = line.strip()
+                                if line:
+                                    try:
+                                        event = json.loads(line.decode('utf-8'))
+                                        return jsonify({"event": event}), 200
+                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                                        logger.warning(f"Failed to parse event: {e}")
+                                        return jsonify({"event": None}), 200
+                            break
+                
+                return jsonify({"event": None}), 200
+                
+        except FileNotFoundError:
+            return jsonify({"event": None}), 200
+        except Exception as e:
+            logger.warning(f"Failed to read detections file: {e}")
+            return jsonify({"event": None}), 200
 
     @app.get("/api/health")
     def api_health():
