@@ -36,6 +36,16 @@ class DetectorDaemon:
         self.allow_classes = os.getenv('DETECTOR_CLASS_ALLOW', 'drone,dron,дрон,uav')
         self.max_side = int(os.getenv('IMG_MAX_SIDE', '1280'))
         
+        # Class ID filter
+        class_ids_str = os.getenv('DETECTOR_CLASS_IDS', '')
+        self.class_id_allow = None
+        if class_ids_str:
+            try:
+                self.class_id_allow = set(int(id.strip()) for id in class_ids_str.split(','))
+            except ValueError:
+                self.logger.warning(f"Invalid DETECTOR_CLASS_IDS: {class_ids_str}")
+                self.class_id_allow = None
+        
         # Ensure log directory exists
         os.makedirs(self.log_dir, exist_ok=True)
         
@@ -61,7 +71,8 @@ class DetectorDaemon:
                 model_path, self.logger, 
                 min_conf=self.min_conf,
                 allow_classes=self.allow_classes,
-                max_side=self.max_side
+                max_side=self.max_side,
+                class_id_allow=self.class_id_allow
             )
         
         # Signal handling

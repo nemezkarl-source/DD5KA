@@ -20,12 +20,14 @@ except ImportError:
 
 class YOLOCPUInference:
     def __init__(self, model_path: str, logger: logging.Logger, min_conf: float = 0.55, 
-                 allow_classes: str = "drone,dron,дрон,uav", max_side: int = 1280):
+                 allow_classes: str = "drone,dron,дрон,uav", max_side: int = 1280, 
+                 class_id_allow: Optional[set] = None):
         self.model_path = model_path
         self.logger = logger
         self.min_conf = min_conf
         self.allow_classes = set(cls.strip().lower() for cls in allow_classes.split(','))
         self.max_side = max_side
+        self.class_id_allow = class_id_allow
         self.model = None
         self.model_loaded = False
         self.load_error = None
@@ -114,6 +116,10 @@ class YOLOCPUInference:
                         if conf < self.min_conf:
                             continue
                         
+                        # Filter by class ID (if specified)
+                        if self.class_id_allow is not None and cls not in self.class_id_allow:
+                            continue
+                        
                         # Normalize class name
                         class_name = self._normalize_class_name(cls)
                         
@@ -141,7 +147,11 @@ class YOLOCPUInference:
             
             # Log with filtering info
             allow_str = ",".join(sorted(self.allow_classes))
-            self.logger.info(f"infer {infer_time}ms, dets={len(detections)}, conf>={self.min_conf}, classes={allow_str}")
+            log_parts = [f"infer {infer_time}ms", f"dets={len(detections)}", f"conf>={self.min_conf}", f"classes={allow_str}"]
+            if self.class_id_allow is not None:
+                class_ids_str = ",".join(map(str, sorted(self.class_id_allow)))
+                log_parts.append(f"classes_id={class_ids_str}")
+            self.logger.info(", ".join(log_parts))
             
             return {
                 "image": {
