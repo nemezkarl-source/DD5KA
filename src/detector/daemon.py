@@ -25,15 +25,15 @@ class DetectorDaemon:
         os.makedirs(self.log_dir, exist_ok=True)
         
         # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - detector - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(f"{self.log_dir}/detector.log"),
-                logging.StreamHandler(sys.stdout)
-            ]
-        )
-        self.logger = logging.getLogger(__name__)
+        self.logger = logging.getLogger("detector")
+        self.logger.setLevel(logging.INFO)
+        
+        if not self.logger.handlers:
+            handler = logging.FileHandler(f"{self.log_dir}/detector.log", mode="a")
+            formatter = logging.Formatter('%(asctime)s - detector - %(levelname)s - %(message)s')
+            handler.setFormatter(formatter)
+            self.logger.addHandler(handler)
+            self.logger.propagate = False
         
         # Detection log file
         self.detections_file = f"{self.log_dir}/detections.jsonl"
@@ -60,8 +60,9 @@ class DetectorDaemon:
             event["error"] = error_msg
             
         try:
-            with open(self.detections_file, 'a') as f:
-                f.write(json.dumps(event) + '\n')
+            with open(self.detections_file, 'a', encoding='utf-8', buffering=1) as f:
+                f.write(json.dumps(event, ensure_ascii=False) + '\n')
+                f.flush()
         except Exception as e:
             self.logger.error(f"Failed to write detection: {e}")
     
