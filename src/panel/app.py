@@ -1,7 +1,7 @@
 import logging
 import os
 import subprocess
-from flask import Flask, Response, jsonify, send_file
+from flask import Flask, Response, jsonify, send_file, stream_with_context
 
 def create_app():
     app = Flask(__name__)
@@ -53,6 +53,67 @@ def create_app():
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
             logger.warning(f"snapshot failed: {type(e).__name__}")
             return jsonify({"error": "snapshot failed"}), 500
+
+    @app.get("/stream")
+    def stream():
+        def generate_frames():
+            proc = None
+            try:
+                logger.info("stream start")
+                proc = subprocess.Popen(
+                    ["/usr/bin/rpicam-vid", "--codec", "mjpeg", "-t", "0", "-o", "-", "--inline"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    bufsize=0,
+                    close_fds=True
+                )
+                
+                if proc.poll() is not None:
+                    raise FileNotFoundError("rpicam-vid failed to start")
+                
+                buffer = b""
+                while True:
+                    chunk = proc.stdout.read(4096)
+                    if not chunk:
+                        break
+                    
+                    buffer += chunk
+                    
+                    # Find JPEG frames (SOI 0xFFD8 to EOI 0xFFD9)
+                    while True:
+                        soi = buffer.find(b'\xff\xd8')
+                        if soi == -1:
+                            break
+                        
+                        eoi = buffer.find(b'\xff\xd9', soi)
+                        if eoi == -1:
+                            break
+                        
+                        frame = buffer[soi:eoi + 2]
+                        buffer = buffer[eoi + 2:]
+                        
+                        if len(frame) > 0:
+                            yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode() + frame + b"\r\n"
+                            
+            except Exception as e:
+                logger.warning(f"stream error: {type(e).__name__}")
+            finally:
+                if proc:
+                    try:
+                        proc.terminate()
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    logger.info("stream stop")
+        
+        try:
+            return Response(
+                stream_with_context(generate_frames()),
+                mimetype='multipart/x-mixed-replace; boundary=frame',
+                headers={'Cache-Control': 'no-store'}
+            )
+        except FileNotFoundError:
+            return jsonify({"error": "stream unavailable"}), 500
 
     @app.get("/")
     def index():
