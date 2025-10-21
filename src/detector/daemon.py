@@ -27,13 +27,13 @@ class DetectorDaemon:
         # Setup logging
         self.logger = logging.getLogger("detector")
         self.logger.setLevel(logging.INFO)
+        self.logger.propagate = False
         
         if not self.logger.handlers:
             handler = logging.FileHandler(f"{self.log_dir}/detector.log", mode="a")
             formatter = logging.Formatter('%(asctime)s - detector - %(levelname)s - %(message)s')
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
-            self.logger.propagate = False
         
         # Detection log file
         self.detections_file = f"{self.log_dir}/detections.jsonl"
