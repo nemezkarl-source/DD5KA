@@ -58,16 +58,32 @@ def create_app():
 
     @app.get("/stream")
     def stream():
-        # Parse and validate query parameters
-        width = max(320, min(4056, int(request.args.get('width', 1280))))
-        height = max(240, min(3040, int(request.args.get('height', 720))))
+        # Parse and validate query parameters with safe resolution fallback
+        try:
+            width = int(request.args.get('width', 2028))
+            height = int(request.args.get('height', 1520))
+        except (ValueError, TypeError):
+            width, height = 2028, 1520
+        
+        # Only allow safe resolutions for IMX500
+        if (width, height) not in [(2028, 1520), (4056, 3040)]:
+            width, height = 2028, 1520
+            safe_mode = "no"
+        else:
+            safe_mode = "yes"
+        
         fps = max(1, min(30, int(request.args.get('fps', 10))))
         quality = max(10, min(100, int(request.args.get('quality', 80))))
         
         def generate_frames():
             proc = None
             try:
-                logger.info(f"stream start w={width} h={height} fps={fps} q={quality}")
+                logger.info(f"stream start w={width} h={height} fps={fps} q={quality} (safe={safe_mode})")
+                
+                # Soft guard: kill existing rpicam-vid processes
+                subprocess.run(["pkill", "-f", "/usr/bin/rpicam-vid"], 
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
                 proc = subprocess.Popen(
                     ["/usr/bin/rpicam-vid", "--codec", "mjpeg", "--inline", "--nopreview", 
                      "--width", str(width), "--height", str(height), "--framerate", str(fps),
@@ -78,8 +94,8 @@ def create_app():
                     close_fds=True
                 )
                 
-                # Grace period for startup
-                time.sleep(0.5)
+                # Extended grace period for startup (500-800ms)
+                time.sleep(0.7)
                 if proc.poll() is not None:
                     logger.warning(f"rpicam-vid early exit, returncode: {proc.returncode}")
                     raise FileNotFoundError("rpicam-vid failed to start")
