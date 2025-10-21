@@ -1,6 +1,8 @@
 import logging
 import os
 import subprocess
+import time
+from functools import partial
 from flask import Flask, Response, jsonify, send_file, stream_with_context
 
 def create_app():
@@ -61,23 +63,26 @@ def create_app():
             try:
                 logger.info("stream start")
                 proc = subprocess.Popen(
-                    ["/usr/bin/rpicam-vid", "--codec", "mjpeg", "-t", "0", "-o", "-", "--inline"],
+                    ["/usr/bin/rpicam-vid", "--codec", "mjpeg", "--inline", "--nopreview", 
+                     "--width", "1280", "--height", "720", "--framerate", "10", "-t", "0", "-o", "-"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
                     close_fds=True
                 )
                 
+                # Grace period for startup
+                time.sleep(0.5)
                 if proc.poll() is not None:
+                    logger.warning(f"rpicam-vid early exit, returncode: {proc.returncode}")
                     raise FileNotFoundError("rpicam-vid failed to start")
                 
-                buffer = b""
-                while True:
-                    chunk = proc.stdout.read(4096)
+                buffer = bytearray()
+                for chunk in iter(partial(proc.stdout.read, 4096), b""):
                     if not chunk:
                         break
                     
-                    buffer += chunk
+                    buffer.extend(chunk)
                     
                     # Find JPEG frames (SOI 0xFFD8 to EOI 0xFFD9)
                     while True:
@@ -89,7 +94,7 @@ def create_app():
                         if eoi == -1:
                             break
                         
-                        frame = buffer[soi:eoi + 2]
+                        frame = bytes(buffer[soi:eoi + 2])
                         buffer = buffer[eoi + 2:]
                         
                         if len(frame) > 0:
