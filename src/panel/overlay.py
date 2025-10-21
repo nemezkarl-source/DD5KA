@@ -9,6 +9,7 @@ import logging
 import os
 import time
 import io
+from datetime import datetime
 from typing import Optional, Dict, List
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -26,8 +27,18 @@ class OverlayStream:
     def __init__(self, logger: logging.Logger):
         self.logger = logger
         self.detections_file = "/home/nemez/DD5KA/logs/detections.jsonl"
-        self.max_side = int(os.getenv('OVERLAY_MAX_SIDE', '1280'))
+        self.max_side = int(os.getenv('OVERLAY_MAX_SIDE', '640'))
         self.last_ok_frame: Optional[bytes] = None
+        self.last_capture_time = 0.0
+        
+        # Environment variables
+        self.det_max_age_ms = int(os.getenv('OVERLAY_DET_MAX_AGE_MS', '4000'))
+        self.output_fps = int(os.getenv('OVERLAY_FPS', '4'))
+        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '2'))
+        
+        # Calculate intervals
+        self.output_interval = 1.0 / self.output_fps
+        self.capture_interval = 1.0 / self.capture_fps
         
     def _get_last_detection(self) -> Optional[Dict]:
         """Get last detection event from JSONL file"""
@@ -38,13 +49,13 @@ class OverlayStream:
             with open(self.detections_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
                 
-            # Find last non-empty line
+            # Get last non-empty line
             for line in reversed(lines):
                 line = line.strip()
                 if line:
                     try:
                         event = json.loads(line)
-                        if event.get("type") == "detection" and event.get("detections"):
+                        if event.get("type") == "detection":
                             return event
                     except json.JSONDecodeError:
                         continue
@@ -54,12 +65,22 @@ class OverlayStream:
             return None
     
     def _get_snapshot(self) -> Optional[bytes]:
-        """Get snapshot JPEG data"""
-        try:
-            return capture_jpeg(max_side=self.max_side)
-        except Exception as e:
-            self.logger.warning(f"Failed to get snapshot: {e}")
-            return None
+        """Get snapshot JPEG data with rate limiting"""
+        current_time = time.time()
+        
+        # Check if we should capture a new frame
+        if current_time - self.last_capture_time >= self.capture_interval:
+            try:
+                jpeg_data = capture_jpeg(max_side=self.max_side)
+                if jpeg_data:
+                    self.last_ok_frame = jpeg_data
+                    self.last_capture_time = current_time
+                    return jpeg_data
+            except Exception as e:
+                self.logger.warning(f"Failed to get snapshot: {e}")
+        
+        # Return last successful frame or None
+        return self.last_ok_frame
     
     def _draw_overlays_cv2(self, image_np: np.ndarray, detections: List[Dict], scale_x: float, scale_y: float) -> np.ndarray:
         """Draw detection overlays using OpenCV"""
@@ -150,16 +171,28 @@ class OverlayStream:
             try:
                 # Get snapshot
                 jpeg_data = self._get_snapshot()
-                if jpeg_data:
-                    self.last_ok_frame = jpeg_data
-                elif self.last_ok_frame:
-                    jpeg_data = self.last_ok_frame
-                else:
+                if not jpeg_data:
                     jpeg_data = self._create_no_frame()
                 
-                # Get last detection
+                # Get last detection event
                 detection_event = self._get_last_detection()
-                detections = detection_event.get("detections", []) if detection_event else []
+                detections = []
+                age_ms = 0
+                fresh = time.time() - self.last_capture_time < self.capture_interval
+                
+                if detection_event:
+                    # Check event age
+                    try:
+                        event_ts = datetime.fromisoformat(detection_event["ts"].replace('Z', '+00:00'))
+                        now_utc = datetime.now(event_ts.tzinfo)
+                        age_ms = int((now_utc - event_ts).total_seconds() * 1000)
+                        
+                        if age_ms <= self.det_max_age_ms:
+                            detections = detection_event.get("detections", [])
+                        else:
+                            self.logger.info(f"stale event, age_ms={age_ms}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to parse event timestamp: {e}")
                 
                 # Process image
                 start_draw = time.time()
@@ -208,12 +241,12 @@ class OverlayStream:
                     frame_data = output.getvalue()
                 
                 draw_time = int((time.time() - start_draw) * 1000)
-                self.logger.info(f"overlay frame: dets={len(detections)}, draw_ms={draw_time}")
+                self.logger.info(f"overlay frame: dets={len(detections)}, age_ms={age_ms}, draw_ms={draw_time}, fresh={fresh}")
                 
                 # Yield MJPEG frame
                 yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
                 
-                time.sleep(0.3)  # 3-4 FPS
+                time.sleep(self.output_interval)
                 
             except Exception as e:
                 self.logger.warning(f"Overlay stream error: {e}")
