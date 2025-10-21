@@ -54,9 +54,25 @@ def create_app():
         except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
             camera_status = "error"
         
+        # Check detector status
+        detector_status = "stopped"
+        try:
+            result = subprocess.run(["systemctl", "is-active", "dd5ka-detector.service"], 
+                                  capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                status = result.stdout.strip()
+                if status == "active":
+                    detector_status = "running"
+                elif status in ["activating", "reloading"]:
+                    detector_status = "starting"
+                else:
+                    detector_status = "stopped"
+        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
+            detector_status = "stopped"
+        
         return jsonify({
             "camera": camera_status,
-            "detector": "unknown"
+            "detector": detector_status
         }), 200
 
     @app.get("/api/snapshot")
