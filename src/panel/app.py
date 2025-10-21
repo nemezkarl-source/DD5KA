@@ -15,7 +15,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from panel.overlay import OverlayStream
-from panel.camera import capture_jpeg
+from panel.camera import capture_jpeg, is_camera_busy
 
 def create_app():
     app = Flask(__name__)
@@ -51,153 +51,85 @@ def create_app():
                 file_size = f.tell()
                 
                 if file_size == 0:
-                    return jsonify({"event": None}), 200
+                    return {"error": "no events"}, 404
                 
-                # Read backwards in blocks to find last non-empty line
-                buffer = b""
-                block_size = 8192
-                pos = file_size
+                # Read backwards to find last complete line
+                chunk_size = min(8192, file_size)
+                f.seek(max(0, file_size - chunk_size))
+                chunk = f.read()
                 
-                while pos > 0:
-                    read_size = min(block_size, pos)
-                    pos -= read_size
-                    f.seek(pos)
-                    chunk = f.read(read_size)
-                    buffer = chunk + buffer
+                # Find last newline
+                last_newline = chunk.rfind(b'\n')
+                if last_newline == -1:
+                    # No newlines in chunk, read from beginning
+                    f.seek(0)
+                    chunk = f.read()
+                    last_newline = chunk.rfind(b'\n')
+                
+                if last_newline == -1:
+                    # Single line file
+                    line = chunk.decode('utf-8', errors='ignore').strip()
+                else:
+                    # Extract last line
+                    line = chunk[last_newline + 1:].decode('utf-8', errors='ignore').strip()
+                
+                if not line:
+                    return {"error": "no events"}, 404
+                
+                # Parse JSON
+                try:
+                    event = json.loads(line)
+                    return event, 200
+                except json.JSONDecodeError:
+                    return {"error": "invalid JSON"}, 500
                     
-                    # Find last complete line
-                    lines = buffer.split(b'\n')
-                    if len(lines) > 1:
-                        # Check if last line is non-empty
-                        last_line = lines[-1].strip()
-                        if last_line:
-                            try:
-                                event = json.loads(last_line.decode('utf-8'))
-                                return jsonify({"event": event}), 200
-                            except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                                logger.warning(f"Failed to parse last event: {e}")
-                                return jsonify({"event": None}), 200
-                        else:
-                            # Last line is empty, check previous line
-                            for line in reversed(lines[:-1]):
-                                line = line.strip()
-                                if line:
-                                    try:
-                                        event = json.loads(line.decode('utf-8'))
-                                        return jsonify({"event": event}), 200
-                                    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-                                        logger.warning(f"Failed to parse event: {e}")
-                                        return jsonify({"event": None}), 200
-                            break
-                
-                return jsonify({"event": None}), 200
-                
         except FileNotFoundError:
-            return jsonify({"event": None}), 200
+            return {"error": "detections file not found"}, 404
         except Exception as e:
-            logger.warning(f"Failed to read detections file: {e}")
-            return jsonify({"event": None}), 200
+            logger.error(f"failed to read last event: {e}")
+            return {"error": "read failed"}, 500
 
     @app.get("/api/health")
     def api_health():
-        logger.info("health check")
-        
-        # Check camera status
-        camera_status = "error"
+        """Health check with camera status"""
         try:
-            # Get list of rpicam PIDs
-            result = subprocess.run(["pgrep", "-f", "rpicam"], 
-                                  capture_output=True, text=True, timeout=2)
-            if result.returncode == 0 and result.stdout.strip():
-                pids = result.stdout.strip().split('\n')
-                is_busy = False
-                
-                for pid in pids:
-                    try:
-                        # Get command name
-                        comm_result = subprocess.run(["ps", "-o", "comm=", "-p", pid], 
-                                                   capture_output=True, text=True, timeout=1)
-                        if comm_result.returncode == 0:
-                            comm = comm_result.stdout.strip()
-                            if comm == "rpicam-vid":
-                                is_busy = True
-                                break
-                            
-                            # Get elapsed time
-                            etimes_result = subprocess.run(["ps", "-o", "etimes=", "-p", pid], 
-                                                         capture_output=True, text=True, timeout=1)
-                            if etimes_result.returncode == 0:
-                                try:
-                                    etimes = int(etimes_result.stdout.strip())
-                                    if etimes >= 2:
-                                        is_busy = True
-                                        break
-                                except ValueError:
-                                    pass
-                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-                        continue
-                
-                if is_busy:
-                    camera_status = "busy"
-                else:
-                    # Check if media devices are accessible
-                    try:
-                        with open("/dev/media0", "rb") as f:
-                            pass
-                        camera_status = "ok"
-                    except (FileNotFoundError, PermissionError):
-                        camera_status = "error"
+            # Check if camera processes are running
+            result = subprocess.run(
+                ["pgrep", "-f", "rpicam-still"],
+                capture_output=True,
+                text=True
+            )
+            
+            camera_processes = result.stdout.strip()
+            if camera_processes:
+                return {
+                    "status": "ok",
+                    "camera": "busy",
+                    "processes": len(camera_processes.split('\n')) if camera_processes else 0
+                }, 200
             else:
-                # No rpicam processes, check media devices
-                try:
-                    with open("/dev/media0", "rb") as f:
-                        pass
-                    camera_status = "ok"
-                except (FileNotFoundError, PermissionError):
-                    camera_status = "error"
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError):
-            # Fallback to media device check
-            try:
-                with open("/dev/media0", "rb") as f:
-                    pass
-                camera_status = "ok"
-            except (FileNotFoundError, PermissionError):
-                camera_status = "error"
-        
-        # Check detector status
-        detector_status = "stopped"
-        try:
-            result = subprocess.run(["systemctl", "is-active", "dd5ka-detector.service"], 
-                                  capture_output=True, text=True, timeout=2)
-            if result.returncode == 0:
-                status = result.stdout.strip()
-                if status == "active":
-                    detector_status = "running"
-                elif status in ["activating", "reloading"]:
-                    detector_status = "starting"
-                else:
-                    detector_status = "stopped"
-        except (subprocess.TimeoutExpired, subprocess.CalledProcessError, FileNotFoundError):
-            detector_status = "stopped"
-        
-        return jsonify({
-            "camera": camera_status,
-            "detector": detector_status
-        }), 200
-
-    @app.get("/api/snapshot")
-    def api_snapshot():
-        return jsonify({
-            "timestamp": None,
-            "label": None,
-            "confidence": None,
-            "image": None
-        }), 200
+                return {
+                    "status": "ok", 
+                    "camera": "ok"
+                }, 200
+                
+        except Exception as e:
+            logger.error(f"health check failed: {e}")
+            return {
+                "status": "error",
+                "camera": "error"
+            }, 500
 
     @app.get("/snapshot")
     def snapshot():
         try:
             max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "960"))
+            
+            # Check if camera is busy and handle queue
+            if is_camera_busy():
+                logger.warning("snapshot deferred: busy")
+                return jsonify({"error": "camera busy"}), 503
+            
             jpeg_data = capture_jpeg(max_side=max_side)
             return Response(jpeg_data, mimetype="image/jpeg"), 200
         except Exception as e:
@@ -216,99 +148,71 @@ def create_app():
         # Only allow safe resolutions for IMX500
         if (width, height) not in [(2028, 1520), (4056, 3040)]:
             width, height = 2028, 1520
-            safe_mode = "no"
-        else:
-            safe_mode = "yes"
-        
-        fps = max(1, min(30, int(request.args.get('fps', 10))))
-        quality = max(10, min(100, int(request.args.get('quality', 80))))
-        
-        def generate_frames():
-            proc = None
-            try:
-                logger.info(f"stream start w={width} h={height} fps={fps} q={quality} (safe={safe_mode})")
-                
-                # Soft guard: kill existing rpicam-vid processes
-                subprocess.run(["pkill", "-f", "/usr/bin/rpicam-vid"], 
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                proc = subprocess.Popen(
-                    ["/usr/bin/rpicam-vid", "--codec", "mjpeg", "--inline", "--nopreview", 
-                     "--width", str(width), "--height", str(height), "--framerate", str(fps),
-                     "--quality", str(quality), "-t", "0", "-o", "-"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    bufsize=0,
-                    close_fds=True
-                )
-                
-                # Extended grace period for startup (500-800ms)
-                time.sleep(0.7)
-                if proc.poll() is not None:
-                    logger.warning(f"rpicam-vid early exit, returncode: {proc.returncode}")
-                    raise FileNotFoundError("rpicam-vid failed to start")
-                
-                buffer = bytearray()
-                for chunk in iter(partial(proc.stdout.read, 4096), b""):
-                    if not chunk:
-                        break
-                    
-                    buffer.extend(chunk)
-                    
-                    # Find JPEG frames (SOI 0xFFD8 to EOI 0xFFD9)
-                    while True:
-                        soi = buffer.find(b'\xff\xd8')
-                        if soi == -1:
-                            break
-                        
-                        eoi = buffer.find(b'\xff\xd9', soi)
-                        if eoi == -1:
-                            break
-                        
-                        frame = bytes(buffer[soi:eoi + 2])
-                        buffer = buffer[eoi + 2:]
-                        
-                        if len(frame) > 0:
-                            yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame)}\r\n\r\n".encode() + frame + b"\r\n"
-                            
-            except Exception as e:
-                logger.warning(f"stream error: {type(e).__name__}")
-            finally:
-                if proc:
-                    try:
-                        proc.terminate()
-                        proc.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    logger.info("stream stop")
         
         try:
+            # Use rpicam-vid for MJPEG streaming
+            cmd = [
+                "/usr/bin/rpicam-vid",
+                "-n",  # no preview
+                "-t", "0",  # continuous
+                "--width", str(width),
+                "--height", str(height),
+                "--framerate", "15",
+                "--bitrate", "2000000",  # 2Mbps
+                "--inline",  # inline headers
+                "-o", "-"  # output to stdout
+            ]
+            
+            def generate():
+                try:
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        bufsize=0
+                    )
+                    
+                    # Stream MJPEG data
+                    while True:
+                        chunk = process.stdout.read(8192)
+                        if not chunk:
+                            break
+                        yield chunk
+                        
+                except Exception as e:
+                    logger.error(f"stream failed: {e}")
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                    yield b"Stream error"
+                    yield b"\r\n"
+                finally:
+                    if 'process' in locals():
+                        process.terminate()
+                        process.wait()
+            
             return Response(
-                stream_with_context(generate_frames()),
-                mimetype='multipart/x-mixed-replace; boundary=frame',
-                headers={'Cache-Control': 'no-store'}
+                stream_with_context(generate()),
+                mimetype="multipart/x-mixed-replace; boundary=frame"
             )
-        except FileNotFoundError:
-            return jsonify({"error": "stream unavailable"}), 500
+            
+        except Exception as e:
+            logger.error(f"stream setup failed: {e}")
+            return jsonify({"error": "stream failed"}), 500
 
     @app.get("/stream/overlay.mjpg")
-    def overlay_stream():
+    def stream_overlay():
         """MJPEG stream with detection overlays"""
-        overlay = OverlayStream(logger)
-        return Response(
-            stream_with_context(overlay.generate_frames()),
-            mimetype='multipart/x-mixed-replace; boundary=frame',
-            headers={'Cache-Control': 'no-store'}
-        )
-
-    @app.get("/")
-    def index():
-        return Response("DD-5KA Panel: OK\n/healthz -> 200", mimetype="text/plain")
+        try:
+            overlay_stream = OverlayStream()
+            return Response(
+                stream_with_context(overlay_stream.generate()),
+                mimetype="multipart/x-mixed-replace; boundary=frame"
+            )
+        except Exception as e:
+            logger.error(f"overlay stream failed: {e}")
+            return jsonify({"error": "overlay stream failed"}), 500
 
     return app
 
 if __name__ == "__main__":
-    # Локальный запуск для разработки: python app.py
     app = create_app()
-    app.run(host="0.0.0.0", port=8098, debug=False, use_reloader=False)
-
+    app.run(host="0.0.0.0", port=8098, debug=False)
