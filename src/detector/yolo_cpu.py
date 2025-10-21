@@ -6,7 +6,7 @@ DD-5KA YOLO CPU Inference Helper
 import logging
 import os
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 from PIL import Image
 import io
@@ -16,6 +16,24 @@ try:
     ULTRALYTICS_AVAILABLE = True
 except ImportError:
     ULTRALYTICS_AVAILABLE = False
+
+
+def to_py(x: Any) -> Any:
+    """Convert numpy types to Python types recursively for JSON serialization"""
+    if isinstance(x, np.integer):
+        return int(x)
+    elif isinstance(x, np.floating):
+        return float(x)
+    elif isinstance(x, np.ndarray):
+        return [to_py(item) for item in x.tolist()]
+    elif isinstance(x, list):
+        return [to_py(item) for item in x]
+    elif isinstance(x, tuple):
+        return tuple(to_py(item) for item in x)
+    elif isinstance(x, dict):
+        return {key: to_py(value) for key, value in x.items()}
+    else:
+        return x
 
 
 class YOLOCPUInference:
@@ -139,10 +157,10 @@ class YOLOCPUInference:
                         ]
                         
                         detections.append({
-                            "class_id": cls,
+                            "class_id": int(cls),
                             "class_name": class_name,
-                            "conf": conf,
-                            "bbox_xyxy": xyxy_orig
+                            "conf": float(conf),
+                            "bbox_xyxy": [float(coord) for coord in xyxy_orig]
                         })
             
             # Log with filtering info
@@ -153,17 +171,21 @@ class YOLOCPUInference:
                 log_parts.append(f"classes_id={class_ids_str}")
             self.logger.info(", ".join(log_parts))
             
-            return {
+            # Build result and convert all numpy types to Python types
+            result = {
                 "image": {
-                    "width": orig_w,
-                    "height": orig_h
+                    "width": int(orig_w),
+                    "height": int(orig_h)
                 },
                 "detections": detections,
                 "perf": {
-                    "infer_ms": infer_time,
-                    "resized": resized_dims
+                    "infer_ms": int(infer_time),
+                    "resized": [int(dim) for dim in resized_dims]
                 }
             }
+            
+            # Ensure all values are JSON-serializable
+            return to_py(result)
             
         except Exception as e:
             self.logger.error(f"inference failed: {e}")
