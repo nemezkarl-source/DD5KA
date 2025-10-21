@@ -3,7 +3,7 @@ import os
 import subprocess
 import time
 from functools import partial
-from flask import Flask, Response, jsonify, send_file, stream_with_context
+from flask import Flask, Response, jsonify, send_file, stream_with_context, request
 
 def create_app():
     app = Flask(__name__)
@@ -58,13 +58,20 @@ def create_app():
 
     @app.get("/stream")
     def stream():
+        # Parse and validate query parameters
+        width = max(320, min(4056, int(request.args.get('width', 1280))))
+        height = max(240, min(3040, int(request.args.get('height', 720))))
+        fps = max(1, min(30, int(request.args.get('fps', 10))))
+        quality = max(10, min(100, int(request.args.get('quality', 80))))
+        
         def generate_frames():
             proc = None
             try:
-                logger.info("stream start")
+                logger.info(f"stream start w={width} h={height} fps={fps} q={quality}")
                 proc = subprocess.Popen(
                     ["/usr/bin/rpicam-vid", "--codec", "mjpeg", "--inline", "--nopreview", 
-                     "--width", "1280", "--height", "720", "--framerate", "10", "-t", "0", "-o", "-"],
+                     "--width", str(width), "--height", str(height), "--framerate", str(fps),
+                     "--quality", str(quality), "-t", "0", "-o", "-"],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.DEVNULL,
                     bufsize=0,
