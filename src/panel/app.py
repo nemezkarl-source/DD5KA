@@ -42,7 +42,7 @@ def create_app():
     def snapshot():
         try:
             subprocess.run(
-                ["rpicam-still", "-o", "/dev/shm/dd5ka_snapshot.jpg", "--nopreview"],
+                ["rpicam-still", "-t", "1", "--nopreview", "-o", "/dev/shm/dd5ka_snapshot.jpg"],
                 timeout=4,
                 check=True,
                 stdout=subprocess.DEVNULL,
@@ -50,7 +50,8 @@ def create_app():
             )
             logger.info("snapshot captured")
             return send_file("/dev/shm/dd5ka_snapshot.jpg", mimetype="image/jpeg"), 200
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
+            logger.warning(f"snapshot failed: {type(e).__name__}")
             return jsonify({"error": "snapshot failed"}), 500
 
     @app.get("/")
