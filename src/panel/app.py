@@ -6,7 +6,7 @@ import sys
 import time
 from functools import partial
 from os.path import abspath, join, dirname
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context, current_app
 
 # Add src directory to sys.path for systemd execution
 # (systemd runs app.py as script, not as module)
@@ -210,6 +210,11 @@ def create_app():
         except Exception as e:
             logger.error(f"overlay stream failed: {e}")
             return jsonify({"error": "overlay stream failed"}), 500
+
+    @app.route("/overlay.mjpg")
+    def overlay_mjpg():
+        stream = OverlayStream(logger=current_app.logger if hasattr(current_app, "logger") else app.logger)
+        return Response(stream.generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
 
     return app
 
