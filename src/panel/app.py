@@ -211,7 +211,7 @@ def create_app():
             logger.error(f"overlay stream failed: {e}")
             return jsonify({"error": "overlay stream failed"}), 500
 
-    @app.route("/overlay.mjpg")
+    @app.get("/overlay.mjpg")
     def overlay_mjpg():
         stream = OverlayStream(logger=app.logger)
         return Response(
