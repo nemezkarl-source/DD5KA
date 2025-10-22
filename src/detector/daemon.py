@@ -40,7 +40,7 @@ class DetectorDaemon:
         self.fail_extra_ms = int(os.getenv('DETECTOR_FAIL_EXTRA_MS', '180'))
         
         # CPU inference parameters
-        self.min_conf = float(os.getenv('DETECTOR_MIN_CONF', '0.55'))
+        self.conf_min = float(os.getenv('DETECTOR_CONF_MIN', '0.10'))
         self.allow_classes = os.getenv('DETECTOR_CLASS_ALLOW', 'drone,dron,дрон,uav')
         self.max_side = int(os.getenv('IMG_MAX_SIDE', '1280'))
         
@@ -89,7 +89,7 @@ class DetectorDaemon:
             model_path = "/home/nemez/DD5KA/models/cpu/best.pt"
             self.yolo_inference = YOLOCPUInference(
                 model_path, self.logger, 
-                min_conf=self.min_conf,
+                min_conf=self.conf_min,
                 allow_classes=self.allow_classes,
                 max_side=self.max_side,
                 class_id_allow=self.class_id_allow
@@ -98,6 +98,9 @@ class DetectorDaemon:
         # Signal handling
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
+        
+        # Log configuration
+        self.logger.info(f"detector conf_min={self.conf_min}")
         
         self.running = True
         
