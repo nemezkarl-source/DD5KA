@@ -2,6 +2,7 @@
 """
 DD-5KA Camera Helper
 Direct rpicam-still capture with retries and serialization
+Plus a module-level singleton MJPEG grabber for continuous frames.
 """
 
 import logging
@@ -110,6 +111,53 @@ class MJPEGGrabber:
     def get_last_frame(self) -> Optional[bytes]:
         with self._lock:
             return self._last_frame
+
+# ---- Module-level singleton for MJPEG grabber ----
+_GRABBER: Optional[MJPEGGrabber] = None
+_GRABBER_LOCK = threading.Lock()
+
+def ensure_grabber(max_side: int = 960, fps: int = 8) -> Optional[MJPEGGrabber]:
+    """
+    Ensure a global MJPEG grabber is running; create with width/height scaled by max_side.
+    Returns the grabber or None if failed.
+    """
+    global _GRABBER
+    with _GRABBER_LOCK:
+        if _GRABBER is not None:
+            return _GRABBER
+        # compute dims
+        src_w, src_h = 4056, 3040
+        if max(src_w, src_h) > max_side:
+            k = max_side / max(src_w, src_h)
+            w = int(src_w * k) // 2 * 2
+            h = int(src_h * k) // 2 * 2
+        else:
+            w, h = src_w, src_h
+        try:
+            g = MJPEGGrabber(width=w, height=h, fps=max(1, min(30, fps)))
+            g.start()
+            logging.getLogger("panel.camera").info(f"global MJPEG grabber started {w}x{h}@{fps}")
+            _GRABBER = g
+            return _GRABBER
+        except Exception as e:
+            logging.getLogger("panel.camera").warning(f"failed to start global grabber: {e}")
+            return None
+
+def get_grabber_frame() -> Optional[bytes]:
+    """Return last frame from global MJPEG grabber, if any."""
+    g = _GRABBER
+    return g.get_last_frame() if g else None
+
+def stop_grabber():
+    """Stop global MJPEG grabber if running."""
+    global _GRABBER
+    with _GRABBER_LOCK:
+        if _GRABBER:
+            try:
+                _GRABBER.stop()
+            except Exception:
+                pass
+            _GRABBER = None
 
 
 def capture_jpeg(max_side: int = 1280, timeout_ms: int = 120, retries: int = 2) -> bytes:

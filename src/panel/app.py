@@ -15,7 +15,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from panel.overlay import OverlayStream
-from panel.camera import capture_jpeg
+from panel.camera import capture_jpeg, ensure_grabber, get_grabber_frame
 
 def create_app():
     app = Flask(__name__)
@@ -137,8 +137,16 @@ def create_app():
     def snapshot():
         try:
             max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "960"))
-            # Не проверяем занятость камеры заранее: capture_jpeg() сам сериализует доступ
-            jpeg_data = capture_jpeg(max_side=max_side)
+            # Если включён непрерывный захват (по умолчанию), отдаём последний кадр из глобального граббера — это
+            # устраняет конфликты rpicam-still с rpicam-vid и 500-ошибки.
+            use_grabber = os.getenv("SNAPSHOT_USE_GRABBER", os.getenv("OVERLAY_CONTINUOUS", "1")).strip() == "1"
+            jpeg_data = None
+            if use_grabber:
+                ensure_grabber(max_side=max_side, fps=int(os.getenv("OVERLAY_CAPTURE_FPS", "5")))
+                jpeg_data = get_grabber_frame()
+            if not jpeg_data:
+                # fallback на прямой снимок
+                jpeg_data = capture_jpeg(max_side=max_side)
             return Response(jpeg_data, mimetype="image/jpeg"), 200
         except Exception as e:
             logger.warning(f"snapshot failed: {e}")
