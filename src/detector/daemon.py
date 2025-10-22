@@ -12,6 +12,7 @@ import signal
 import sys
 import time
 import urllib.request
+import urllib.error
 from datetime import datetime
 from os.path import abspath, join, dirname
 
@@ -186,7 +187,27 @@ class DetectorDaemon:
                     self._write_detection(False, error_msg)
                     return False
                     
+        except urllib.error.HTTPError as e:
+            # Handle HTTP errors explicitly
+            if e.code in [500, 503]:
+                # Transient errors - log as INFO
+                if e.code == 503:
+                    error_msg = "transient: HTTP 503 busy"
+                else:
+                    error_msg = "transient: HTTP 500"
+                
+                self.logger.info(f"detector transient HTTP {e.code} (busy/fail), will retry once")
+                self._write_detection(False, error_msg)
+                return False
+            else:
+                # Other HTTP errors - log as WARNING
+                error_msg = f"HTTP {e.code}"
+                self.logger.warning(f"detector heartbeat failed: {error_msg}")
+                self._write_detection(False, error_msg)
+                return False
+                
         except urllib.error.URLError as e:
+            # Network/transport errors - log as WARNING
             error_msg = f"URL error: {str(e)}"
             self.logger.warning(f"detector heartbeat failed: {error_msg}")
             self._write_detection(False, error_msg)
