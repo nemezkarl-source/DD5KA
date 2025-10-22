@@ -10,6 +10,7 @@ import os
 import stat
 import time
 import io
+import threading
 from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 import numpy as np
@@ -34,8 +35,9 @@ class OverlayStream:
         self.tail_bytes = int(os.getenv('OVERLAY_TAIL_BYTES', '65536'))
         self.max_side = int(os.getenv('OVERLAY_MAX_SIDE', '640'))
         self.det_max_age_ms = int(os.getenv('OVERLAY_DET_MAX_AGE_MS', '4000'))
-        self.output_fps = int(os.getenv('OVERLAY_FPS', '4'))
-        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '2'))
+        # По умолчанию делаем поток визуально плавнее; значения можно переопределить через ENV
+        self.output_fps = int(os.getenv('OVERLAY_FPS', '10'))
+        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '5'))
         
         # YOLO fallback environment variables
         self.yolo_fallback = os.getenv('OVERLAY_YOLO_FALLBACK', '0') == '1'
@@ -54,6 +56,7 @@ class OverlayStream:
         self.last_ok_frame: Optional[bytes] = None
         self.last_capture_time = 0.0
         self.last_error_log_time = 0.0
+        self._stop = False
         
         # YOLO fallback state
         self._yolo_model = None
@@ -72,6 +75,10 @@ class OverlayStream:
         # Last frame stats for logging в генераторе
         self._last_dets_count = 0
         self._last_draw_ms = 0
+
+        # Запускаем фоновый поток захвата кадров с ограничением частоты (capture_fps)
+        self._capture_thread = threading.Thread(target=self._capture_loop, name="overlay_capture", daemon=True)
+        self._capture_thread.start()
         
     def _get_font(self, size: int = 16):
         """Get cached font"""
@@ -244,7 +251,27 @@ class OverlayStream:
         
         # Return last successful frame or None
         return self.last_ok_frame
-    
+
+    def _capture_loop(self):
+        """Background loop: capture frames at capture_fps and refresh cache."""
+        interval = max(0.05, self.capture_interval)
+        while not self._stop:
+            start = time.time()
+            try:
+                jpeg_data = capture_jpeg(max_side=self.max_side)
+                if jpeg_data:
+                    self.last_ok_frame = jpeg_data
+                    self.last_capture_time = start
+            except Exception as e:
+                # Тише — основной генератор сам поставит NO FRAME при отсутствии
+                now = time.time()
+                if now - self.last_error_log_time >= 5.0:
+                    self.logger.warning(f"capture thread: no frame (will reuse last_ok_frame): {e}")
+                    self.last_error_log_time = now
+            # Поддерживаем целевую частоту захвата
+            elapsed = time.time() - start
+            delay = max(0.0, interval - elapsed)
+            time.sleep(delay)
     
     def _draw_overlays_cv2(self, image_np: np.ndarray, detections: List[Dict], scale_x: float, scale_y: float) -> np.ndarray:
         """Draw detection overlays using OpenCV"""
@@ -363,7 +390,7 @@ class OverlayStream:
                         time.sleep(self.output_interval)
                         continue
                     
-                    # Try to get fresh frame
+                    # Try to get fresh frame (не блокируем камеру — используем последний захваченный кадр)
                     fresh_frame = self.make_frame_bytes()
                     if fresh_frame:
                         frame_data = fresh_frame
@@ -395,8 +422,8 @@ class OverlayStream:
         """Generate a single JPEG frame with overlays"""
         start_draw = time.time()
         
-        # Get snapshot
-        jpeg_data = self._get_snapshot()
+        # Берём последний готовый кадр из кэша (без блокировки)
+        jpeg_data = self._get_snapshot(non_blocking=True)
         if not jpeg_data:
             jpeg_data = self._create_no_frame()
         
@@ -589,3 +616,4 @@ class OverlayStream:
         """Cleanup file handle"""
         if self._det_fp:
             self._det_fp.close()
+        self._stop = True
