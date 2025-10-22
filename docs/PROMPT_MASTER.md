@@ -268,10 +268,10 @@ https://raw.githubusercontent.com/nemezkarl-source/DD5KA/main/<путь/к/фа�
 ### 8.2 Ключевые файлы проекта
 
 **Flask-панель (app.py):**
-https://raw.githubusercontent.com/nemezkarl-source/DD5KA/main/src/panel/app.py
+  https://raw.githubusercontent.com/nemezkarl-source/DD5KA/main/src/panel/app.py
 
 **systemd unit панели:**
-https://raw.githubusercontent.com/nemezkarl-source/DD5KA/main/configs/dd5ka-panel.service
+  https://raw.githubusercontent.com/nemezkarl-source/DD5KA/main/configs/dd5ka-panel.service
 
 **Детектор:**
 - пока отсутствует в репозитории (разработка на RPi)
@@ -329,8 +329,8 @@ https://raw.githubusercontent.com/nemezkarl-source/DD5KA/main/configs/dd5ka-pane
 4. GitHub является единым источником правды. Raspberry Pi = runtime-копия репозитория
 5. Обновление на устройстве выполняется ТОЛЬКО через:
    ```bash
-   git pull
-   systemctl restart <service>
+git pull
+systemctl restart <service>
    ```
 6. Запрещено вносить правки вручную на RPi (nano, vim, python -c и т.п.)
 7. Любой запрос «правь файл на Raspberry Pi» = нарушение протокола
@@ -412,22 +412,22 @@ sudo systemctl daemon-reload && sudo systemctl restart dd5ka-panel.service'
 
 1. **Обновление репозитория:**
    ```bash
-   git add ...
-   git commit ...
-   git push
+git add ...
+git commit ...
+git push
    ```
 
 2. **Применение на Raspberry Pi:**
    ```bash
-   ssh nemez@pi-drone.local
-   cd /home/nemez/project_root
-   git pull
-   sudo systemctl restart <service>
+ssh nemez@pi-drone.local
+cd /home/nemez/project_root
+git pull
+sudo systemctl restart <service>
    ```
 
 3. **Проверка результата:**
    ```bash
-   curl http://pi-drone.local:8098/healthz
+curl http://pi-drone.local:8098/healthz
    # или
    tail -n 50 logs/...
    ```
