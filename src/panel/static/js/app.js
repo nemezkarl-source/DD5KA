@@ -12,6 +12,7 @@ class PanelController {
         this.bindEvents();
         this.startPolling();
         this.updateStatus();
+        this.handleResize();
     }
 
     bindEvents() {
@@ -22,6 +23,9 @@ class PanelController {
         
         // LED test button
         document.getElementById('led-test').addEventListener('click', () => this.testLED());
+        
+        // Window resize handler
+        window.addEventListener('resize', () => this.debounceResize());
     }
 
     async controlDetector(action) {
@@ -208,6 +212,23 @@ class PanelController {
         setInterval(() => {
             this.updateEvents();
         }, 3000);
+    }
+
+    handleResize() {
+        // Ensure stream image fits properly
+        const streamImage = document.getElementById('stream-image');
+        if (streamImage) {
+            streamImage.style.maxWidth = '100%';
+            streamImage.style.maxHeight = '100%';
+            streamImage.style.objectFit = 'contain';
+        }
+    }
+
+    debounceResize() {
+        clearTimeout(this.resizeTimeout);
+        this.resizeTimeout = setTimeout(() => {
+            this.handleResize();
+        }, 100);
     }
 }
 

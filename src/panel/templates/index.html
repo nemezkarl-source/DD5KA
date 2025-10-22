@@ -10,7 +10,7 @@
     </div>
     <div class="toolbar-right">
         <button id="detector-start" class="btn btn-primary">Запуск детектора</button>
-        <button id="detector-stop" class="btn btn-secondary">Остановка детектора</button>
+        <button id="detector-stop" class="btn btn-danger">Остановка детектора</button>
         <button id="detector-restart" class="btn btn-warning">Рестарт сервиса</button>
         <button id="led-test" class="btn btn-accent">Проверка LED</button>
     </div>
@@ -52,7 +52,9 @@
                 <h3>Overlay Stream</h3>
             </div>
             <div class="stream-wrapper">
-                <img id="stream-image" src="/stream/overlay.mjpg" alt="Live Stream" />
+                <div class="stream-aspect-container">
+                    <img id="stream-image" src="/stream/overlay.mjpg" alt="Live Stream" />
+                </div>
             </div>
         </div>
     </div>
