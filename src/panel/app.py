@@ -6,7 +6,7 @@ import sys
 import time
 from functools import partial
 from os.path import abspath, join, dirname
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context, current_app
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context
 
 # Add src directory to sys.path for systemd execution
 # (systemd runs app.py as script, not as module)
@@ -213,8 +213,11 @@ def create_app():
 
     @app.route("/overlay.mjpg")
     def overlay_mjpg():
-        stream = OverlayStream(logger=current_app.logger if hasattr(current_app, "logger") else app.logger)
-        return Response(stream.generate_frames(), mimetype="multipart/x-mixed-replace; boundary=frame")
+        stream = OverlayStream(logger=app.logger)
+        return Response(
+            stream.generate_frames(),
+            mimetype="multipart/x-mixed-replace; boundary=frame"
+        )
 
     return app
 
