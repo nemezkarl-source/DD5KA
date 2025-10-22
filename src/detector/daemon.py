@@ -7,6 +7,7 @@ Heartbeat polling of panel /snapshot endpoint
 import json
 import logging
 import os
+import random
 import signal
 import sys
 import time
@@ -30,6 +31,11 @@ class DetectorDaemon:
         self.poll_sec = max(1, min(60, int(os.getenv('DETECTOR_POLL_SEC', '5'))))
         self.log_dir = os.getenv('LOG_DIR', 'logs')
         self.backend = os.getenv('DD5KA_BACKEND', 'stub')
+        
+        # Retry configuration
+        self.retry_base_ms = int(os.getenv('DETECTOR_RETRY_BASE_MS', '240'))
+        self.retry_jitter = float(os.getenv('DETECTOR_RETRY_JITTER', '0.2'))
+        self.fail_extra_ms = int(os.getenv('DETECTOR_FAIL_EXTRA_MS', '180'))
         
         # CPU inference parameters
         self.min_conf = float(os.getenv('DETECTOR_MIN_CONF', '0.55'))
@@ -122,11 +128,34 @@ class DetectorDaemon:
             self.logger.error(f"Failed to write detection: {e}")
     
     def _poll_panel(self):
-        """Poll panel /snapshot endpoint"""
+        """Poll panel /snapshot endpoint with retry logic"""
         url = f"{self.panel_base_url}/snapshot"
         
+        # First attempt
+        success = self._attempt_snapshot(url)
+        if success:
+            return True
+        
+        # Retry attempt for 500/503 errors
+        self.logger.info("transient: HTTP 500/503, retrying")
+        
+        # Calculate retry delay with jitter
+        jitter = random.uniform(-self.retry_jitter, self.retry_jitter) * self.retry_base_ms
+        delay_ms = max(10, int(self.retry_base_ms + jitter))
+        time.sleep(delay_ms / 1000.0)
+        
+        # Second attempt
+        success = self._attempt_snapshot(url)
+        return success
+    
+    def _attempt_snapshot(self, url):
+        """Single attempt to get snapshot from panel"""
         try:
-            with urllib.request.urlopen(url, timeout=3) as response:
+            # Create request with custom headers
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', 'DD5KA-Detector/CH4')
+            
+            with urllib.request.urlopen(req, timeout=5) as response:
                 if response.status == 200:
                     jpeg_data = response.read()
                     
@@ -140,7 +169,18 @@ class DetectorDaemon:
                         self.logger.info("detector heartbeat (snapshot ok)")
                         self._write_detection(True)
                         return True
+                elif response.status in [500, 503]:
+                    # Transient errors - log as INFO
+                    if response.status == 503:
+                        error_msg = "transient: HTTP 503 busy"
+                    else:
+                        error_msg = "transient: HTTP 500"
+                    
+                    self.logger.info(f"detector heartbeat failed: {error_msg}")
+                    self._write_detection(False, error_msg)
+                    return False
                 else:
+                    # Unexpected status code - log as WARNING
                     error_msg = f"HTTP {response.status}"
                     self.logger.warning(f"detector heartbeat failed: {error_msg}")
                     self._write_detection(False, error_msg)
@@ -163,9 +203,18 @@ class DetectorDaemon:
         
         while self.running:
             try:
-                self._poll_panel()
+                success = self._poll_panel()
+                
+                # Add extra delay after failures to desynchronize with panel requests
+                if not success:
+                    extra_delay = random.uniform(0.8, 1.2) * self.fail_extra_ms / 1000.0
+                    time.sleep(extra_delay)
+                    
             except Exception as e:
                 self.logger.error(f"Unexpected error in main loop: {e}")
+                # Extra delay after unexpected errors too
+                extra_delay = random.uniform(0.8, 1.2) * self.fail_extra_ms / 1000.0
+                time.sleep(extra_delay)
             
             # Sleep with interruption check
             for _ in range(self.poll_sec * 10):  # Check every 100ms
