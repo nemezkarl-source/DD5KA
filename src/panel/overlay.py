@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from .camera import capture_jpeg, ensure_grabber, get_grabber_frame, stop_grabber
+from .camera import ensure_grabber, get_grabber_frame
 
 # Try to import OpenCV, fallback to PIL
 try:
@@ -38,7 +38,8 @@ class OverlayStream:
         # По умолчанию делаем поток ещё плавнее (всё переопределяется через ENV)
         self.output_fps = int(os.getenv('OVERLAY_FPS', '15'))
         self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '12'))
-        self.continuous = os.getenv('OVERLAY_CONTINUOUS', '1') == '1'
+        # Использовать только глобальный MJPEG-граббер (без rpicam-still)
+        self.use_grabber_only = os.getenv('OVERLAY_CONTINUOUS', '1') == '1'
         
         # YOLO fallback environment variables
         self.yolo_fallback = os.getenv('OVERLAY_YOLO_FALLBACK', '0') == '1'
@@ -77,14 +78,14 @@ class OverlayStream:
         self._last_dets_count = 0
         self._last_draw_ms = 0
 
-        # Источник кадров: либо глобальный MJPEG-граббер, либо периодический rpicam-still
+        # Источник кадров: только глобальный MJPEG-граббер (без rpicam-still)
         self._capture_thread: Optional[threading.Thread] = None
-        if self.continuous:
+        if self.use_grabber_only:
             g = ensure_grabber(max_side=self.max_side, fps=self.capture_fps)
             if g is None:
                 self.logger.warning("failed to start global grabber, fallback to still")
-                self.continuous = False
-        if not self.continuous:
+                self.use_grabber_only = False
+        if not self.use_grabber_only:
             self._capture_thread = threading.Thread(target=self._capture_loop, name="overlay_capture", daemon=True)
             self._capture_thread.start()
         
@@ -235,30 +236,56 @@ class OverlayStream:
             return None
     
     def _get_snapshot(self, non_blocking: bool = False) -> Optional[bytes]:
-        """Get snapshot JPEG data with rate limiting and error handling"""
+        """Get snapshot JPEG data from the global MJPEG grabber (no rpicam-still)"""
         current_time = time.time()
-        
-        # If non_blocking, don't capture new frame, just return cached
+        # В режиме non_blocking просто вернём кеш
         if non_blocking:
             return self.last_ok_frame
-        
-        # Check if we should capture a new frame
-        if current_time - self.last_capture_time >= self.capture_interval:
+
+        if self.use_grabber_only:
+            # гарантируем, что граббер запущен
             try:
-                jpeg_data = capture_jpeg(max_side=self.max_side)
-                if jpeg_data:
-                    self.last_ok_frame = jpeg_data
-                    self.last_capture_time = current_time
-                    return jpeg_data
+                ensure_grabber(max_side=self.max_side, fps=self.capture_fps)
             except Exception as e:
-                # Throttled error logging (once every 5 seconds)
+                if current_time - self.last_error_log_time >= 5.0:
+                    self.logger.warning(f"grabber ensure failed: {e}")
+                    self.last_error_log_time = current_time
+                return self.last_ok_frame
+
+            # подождём немного свежий кадр
+            jpeg_data: Optional[bytes] = None
+            deadline = current_time + min(0.6, self.capture_interval * 1.5)
+            while jpeg_data is None and time.time() < deadline:
+                jpeg_data = get_grabber_frame()
+                if jpeg_data:
+                    break
+                time.sleep(0.01)
+
+            if jpeg_data:
+                self.last_ok_frame = jpeg_data
+                self.last_capture_time = time.time()
+                return jpeg_data
+
+            # нет нового кадра — вернём кэш, не дёргая камеру
+            if current_time - self.last_error_log_time >= 5.0:
+                self.logger.info("grabber has no fresh frame, using last_ok_frame")
+                self.last_error_log_time = current_time
+            return self.last_ok_frame
+        else:
+            # Резервный путь (если явно отключили граббер через ENV) — не меняем поведение
+            try:
+                from .camera import capture_jpeg
+                if current_time - self.last_capture_time >= self.capture_interval:
+                    jpeg_data = capture_jpeg(max_side=self.max_side)
+                    if jpeg_data:
+                        self.last_ok_frame = jpeg_data
+                        self.last_capture_time = current_time
+                        return jpeg_data
+            except Exception as e:
                 if current_time - self.last_error_log_time >= 5.0:
                     self.logger.warning(f"no frame, using last_ok_frame: {e}")
                     self.last_error_log_time = current_time
-                pass
-        
-        # Return last successful frame or None
-        return self.last_ok_frame
+            return self.last_ok_frame
 
     def _capture_loop(self):
         """Background loop: capture frames at capture_fps and refresh cache."""
@@ -426,7 +453,7 @@ class OverlayStream:
         start_draw = time.time()
         
         # Берём последний готовый кадр (не блокируем); при continuous — из MJPEG-граббера
-        if self.continuous:
+        if self.use_grabber_only:
             jpeg_data = get_grabber_frame()
         else:
             jpeg_data = self._get_snapshot(non_blocking=True)
