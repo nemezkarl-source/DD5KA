@@ -3,8 +3,6 @@
 class PanelController {
     constructor() {
         this.isRequestInProgress = false;
-        this.ledTestSuccess = false;
-        this.ledTestTime = null;
         this.init();
     }
 
@@ -89,17 +87,13 @@ class PanelController {
             const result = await response.json();
             
             if (result.ok) {
-                this.ledTestSuccess = true;
-                this.ledTestTime = Date.now();
                 this.showToast('LED OK', 'success');
                 // Update LED status immediately
                 setTimeout(() => this.updateStatus(), 500);
             } else {
-                this.ledTestSuccess = false;
                 this.showToast(`LED Error: ${result.error || 'Unknown error'}`, 'error');
             }
         } catch (error) {
-            this.ledTestSuccess = false;
             if (error.name === 'AbortError') {
                 this.showToast('LED Timeout', 'error');
             } else {
@@ -126,10 +120,11 @@ class PanelController {
             const healthStatus = await healthResponse.json();
             this.updateStatusDot('camera-status', healthStatus.camera === 'ok');
 
-            // Update LED status (5 minutes validity)
-            const ledOk = this.ledTestSuccess && (Date.now() - this.ledTestTime) < 5 * 60 * 1000;
-            this.updateStatusDot('led-status', ledOk);
-            this.updateStatusDot('setkomet-status', ledOk); // Same as LED status
+            // Update LED status from server
+            const ledResponse = await this.fetchWithTimeout('/api/led/status', {}, 5000);
+            const ledStatus = await ledResponse.json();
+            this.updateStatusDot('led-status', ledStatus.ok);
+            this.updateStatusDot('setkomet-status', ledStatus.ok); // Same as LED status
 
             // Update network status
             const nmResponse = await this.fetchWithTimeout('/api/nm/status', {}, 5000);

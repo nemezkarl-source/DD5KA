@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 import time
+import threading
+from datetime import datetime
 from functools import partial
 from os.path import abspath, join, dirname
 from flask import Flask, Response, jsonify, request, send_file, stream_with_context, make_response, render_template
@@ -16,6 +18,181 @@ if SRC_DIR not in sys.path:
 
 from panel.overlay import OverlayStream
 from panel.camera import capture_jpeg, ensure_grabber, get_grabber_frame
+
+# LED Configuration
+LED_CHIP_INDEX = 0
+LED_PIN_BCM = 17
+LED_ACTIVE_HIGH = True  # 1=ON, 0=OFF
+DETECTIONS_FILE = "/home/nemez/project_root/logs/detections.jsonl"
+LED_LAST_OK_FILE = "/home/nemez/project_root/logs/last_led_ok.txt"
+
+class LedBlinker:
+    """Thread-safe LED blinking with GPIO control"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+        self._blink_lock = threading.Lock()
+        self._is_blinking = False
+    
+    def blink(self, duration_s=1.0):
+        """Blink LED for specified duration (thread-safe)"""
+        if self._blink_lock.locked():
+            self.logger.info("LED blink already in progress, skipping")
+            return False
+            
+        with self._blink_lock:
+            if self._is_blinking:
+                self.logger.info("LED blink already in progress, skipping")
+                return False
+                
+            self._is_blinking = True
+            
+        try:
+            # Try to import lgpio
+            try:
+                import lgpio
+            except ImportError:
+                self.logger.error("lgpio not available")
+                return False
+
+            # Open GPIO chip
+            chip = lgpio.gpiochip_open(LED_CHIP_INDEX)
+            if chip < 0:
+                self.logger.error("Failed to open GPIO chip")
+                return False
+
+            try:
+                # Set GPIO pin as output, start in OFF state
+                lgpio.gpio_claim_output(chip, LED_PIN_BCM, 0)
+                
+                # Turn ON
+                if LED_ACTIVE_HIGH:
+                    lgpio.gpio_write(chip, LED_PIN_BCM, 1)
+                else:
+                    lgpio.gpio_write(chip, LED_PIN_BCM, 0)
+                
+                # Wait for duration
+                time.sleep(duration_s)
+                
+                # Turn OFF
+                if LED_ACTIVE_HIGH:
+                    lgpio.gpio_write(chip, LED_PIN_BCM, 0)
+                else:
+                    lgpio.gpio_write(chip, LED_PIN_BCM, 1)
+                
+                # Write success timestamp
+                try:
+                    with open(LED_LAST_OK_FILE, 'w') as f:
+                        f.write(datetime.utcnow().isoformat() + 'Z')
+                except Exception as e:
+                    self.logger.warning(f"Failed to write LED timestamp: {e}")
+                
+                self.logger.info(f"LED blinked for {duration_s}s")
+                return True
+                
+            finally:
+                # Clean up GPIO
+                try:
+                    lgpio.gpio_free(chip, LED_PIN_BCM)
+                    lgpio.gpiochip_close(chip)
+                except Exception as e:
+                    self.logger.error(f"GPIO cleanup failed: {e}")
+                    
+        except Exception as e:
+            self.logger.error(f"LED blink failed: {e}")
+            return False
+        finally:
+            self._is_blinking = False
+
+class DetectionTailThread:
+    """Background thread to monitor detection file and trigger LED blinks"""
+    
+    def __init__(self, led_blinker, logger):
+        self.led_blinker = led_blinker
+        self.logger = logger
+        self._stop_event = threading.Event()
+        self._last_position = 0
+        self._last_inode = None
+        self._last_blink_time = 0
+        self._debounce_ms = 900  # Don't blink more than once per 900ms
+        
+    def start(self):
+        """Start the detection monitoring thread"""
+        self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self.thread.start()
+        self.logger.info("Detection tail thread started")
+        
+    def stop(self):
+        """Stop the detection monitoring thread"""
+        self._stop_event.set()
+        if hasattr(self, 'thread'):
+            self.thread.join(timeout=2)
+        self.logger.info("Detection tail thread stopped")
+        
+    def _monitor_loop(self):
+        """Main monitoring loop"""
+        while not self._stop_event.is_set():
+            try:
+                self._check_detections()
+                time.sleep(0.25)  # Check every 250ms
+            except Exception as e:
+                self.logger.error(f"Detection monitoring error: {e}")
+                time.sleep(1)
+                
+    def _check_detections(self):
+        """Check for new detections and trigger LED if needed"""
+        try:
+            if not os.path.exists(DETECTIONS_FILE):
+                return
+                
+            # Get current file stats
+            stat = os.stat(DETECTIONS_FILE)
+            current_inode = stat.st_ino
+            current_size = stat.st_size
+            
+            # If file was rotated/truncated, reset position
+            if self._last_inode != current_inode:
+                self._last_position = 0
+                self._last_inode = current_inode
+                self.logger.info("Detection file rotated, resetting position")
+                
+            # If file is smaller than last position, it was truncated
+            if current_size < self._last_position:
+                self._last_position = 0
+                self.logger.info("Detection file truncated, resetting position")
+                
+            # Read new content
+            if current_size > self._last_position:
+                with open(DETECTIONS_FILE, 'r') as f:
+                    f.seek(self._last_position)
+                    new_content = f.read()
+                    self._last_position = current_size
+                    
+                    # Check for valid JSON lines
+                    lines = new_content.strip().split('\n')
+                    valid_lines = 0
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if line:
+                            try:
+                                json.loads(line)
+                                valid_lines += 1
+                            except json.JSONDecodeError:
+                                continue
+                    
+                    # Trigger LED if we have valid new detections
+                    if valid_lines > 0:
+                        current_time = time.time() * 1000  # Convert to ms
+                        if current_time - self._last_blink_time >= self._debounce_ms:
+                            self.logger.info(f"New detection(s) found, triggering LED blink")
+                            self.led_blinker.blink(1.0)
+                            self._last_blink_time = current_time
+                        else:
+                            self.logger.debug("LED blink debounced")
+                            
+        except Exception as e:
+            self.logger.error(f"Error checking detections: {e}")
 
 def create_app():
     app = Flask(__name__)
@@ -34,6 +211,15 @@ def create_app():
     
     logger = logging.getLogger(__name__)
     logger.info("panel started")
+    
+    # Initialize LED components
+    led_blinker = LedBlinker(logger)
+    detection_tail = DetectionTailThread(led_blinker, logger)
+    detection_tail.start()
+    
+    # Store references for cleanup
+    app.led_blinker = led_blinker
+    app.detection_tail = detection_tail
     
     # Log overlay environment variables
     overlay_env_vars = [
@@ -448,38 +634,13 @@ def create_app():
     # LED test endpoint
     @app.post("/api/led/test")
     def led_test():
-        """Test LED on BCM GPIO17 with 200ms flash"""
+        """Test LED with 1s blink"""
         try:
-            # Try to import lgpio
-            try:
-                import lgpio
-            except ImportError:
-                logger.error("lgpio not available")
-                return {"ok": False, "error": "lgpio not available"}, 500
-
-            # Open GPIO chip
-            chip = lgpio.gpiochip_open(0)
-            if chip < 0:
-                logger.error("Failed to open GPIO chip")
-                return {"ok": False, "error": "Failed to open GPIO chip"}, 500
-
-            try:
-                # Set GPIO17 as output
-                lgpio.gpio_claim_output(chip, 17, 0)
-                
-                # Flash LED (200ms high, then low)
-                lgpio.gpio_write(chip, 17, 1)
-                time.sleep(0.2)
-                lgpio.gpio_write(chip, 17, 0)
-                
-                logger.info("LED test successful")
+            success = app.led_blinker.blink(1.0)
+            if success:
                 return {"ok": True}, 200
-                
-            finally:
-                # Clean up
-                lgpio.gpio_free(chip, 17)
-                lgpio.gpiochip_close(chip)
-                
+            else:
+                return {"ok": False, "error": "LED blink failed"}, 500
         except Exception as e:
             logger.error(f"LED test failed: {e}")
             return {"ok": False, "error": str(e)}, 500
@@ -512,6 +673,39 @@ def create_app():
         except Exception as e:
             logger.error(f"logs read failed: {e}")
             return {"events": [], "error": str(e)}, 500
+
+    # LED status endpoint
+    @app.get("/api/led/status")
+    def led_status():
+        """Get LED status based on last successful blink"""
+        try:
+            if os.path.exists(LED_LAST_OK_FILE):
+                with open(LED_LAST_OK_FILE, 'r') as f:
+                    last_ok_ts = f.read().strip()
+                
+                # Check if timestamp is within last 10 minutes
+                try:
+                    last_ok_time = datetime.fromisoformat(last_ok_ts.replace('Z', '+00:00'))
+                    now = datetime.utcnow().replace(tzinfo=last_ok_time.tzinfo)
+                    time_diff = (now - last_ok_time).total_seconds()
+                    ok = time_diff < 600  # 10 minutes
+                except Exception:
+                    ok = False
+            else:
+                last_ok_ts = None
+                ok = False
+                
+            return {
+                "ok": ok,
+                "last_ok_ts": last_ok_ts
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"LED status check failed: {e}")
+            return {
+                "ok": False,
+                "last_ok_ts": None
+            }, 500
 
     # NetworkManager status (stub)
     @app.get("/api/nm/status")
