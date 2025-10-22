@@ -128,6 +128,25 @@ class DetectorDaemon:
         except Exception as e:
             self.logger.error(f"Failed to write detection: {e}")
     
+    def _handle_http_error(self, code):
+        """Handle HTTP error codes consistently"""
+        if code in [500, 503]:
+            # Transient errors - log as INFO
+            if code == 503:
+                error_msg = "transient: HTTP 503 busy"
+            else:
+                error_msg = "transient: HTTP 500"
+            
+            self.logger.info(f"transient: HTTP {code} (busy/fail), retrying once")
+            self._write_detection(False, error_msg)
+            return False
+        else:
+            # Other HTTP errors - log as WARNING
+            error_msg = f"HTTP {code}"
+            self.logger.warning(f"detector heartbeat failed: {error_msg}")
+            self._write_detection(False, error_msg)
+            return False
+    
     def _poll_panel(self):
         """Poll panel /snapshot endpoint with retry logic"""
         url = f"{self.panel_base_url}/snapshot"
@@ -170,48 +189,26 @@ class DetectorDaemon:
                         self.logger.info("detector heartbeat (snapshot ok)")
                         self._write_detection(True)
                         return True
-                elif response.status in [500, 503]:
-                    # Transient errors - log as INFO
-                    if response.status == 503:
-                        error_msg = "transient: HTTP 503 busy"
-                    else:
-                        error_msg = "transient: HTTP 500"
-                    
-                    self.logger.info(f"detector heartbeat failed: {error_msg}")
-                    self._write_detection(False, error_msg)
-                    return False
                 else:
-                    # Unexpected status code - log as WARNING
-                    error_msg = f"HTTP {response.status}"
-                    self.logger.warning(f"detector heartbeat failed: {error_msg}")
-                    self._write_detection(False, error_msg)
-                    return False
+                    # Handle non-200 status codes
+                    return self._handle_http_error(response.status)
                     
         except urllib.error.HTTPError as e:
-            # Handle HTTP errors explicitly
-            if e.code in [500, 503]:
-                # Transient errors - log as INFO
-                if e.code == 503:
-                    error_msg = "transient: HTTP 503 busy"
-                else:
-                    error_msg = "transient: HTTP 500"
+            # Handle HTTP errors explicitly (must come before URLError)
+            return self._handle_http_error(e.code)
                 
-                self.logger.info(f"detector transient HTTP {e.code} (busy/fail), will retry once")
-                self._write_detection(False, error_msg)
-                return False
+        except urllib.error.URLError as e:
+            # Check if this is actually an HTTPError that got caught as URLError
+            if hasattr(e, 'code') and e.code in [500, 503]:
+                # Redirect to HTTP error handling
+                return self._handle_http_error(e.code)
             else:
-                # Other HTTP errors - log as WARNING
-                error_msg = f"HTTP {e.code}"
+                # Network/transport errors - log as WARNING
+                error_msg = f"URL error: {str(e)}"
                 self.logger.warning(f"detector heartbeat failed: {error_msg}")
                 self._write_detection(False, error_msg)
                 return False
                 
-        except urllib.error.URLError as e:
-            # Network/transport errors - log as WARNING
-            error_msg = f"URL error: {str(e)}"
-            self.logger.warning(f"detector heartbeat failed: {error_msg}")
-            self._write_detection(False, error_msg)
-            return False
         except Exception as e:
             error_msg = f"Unexpected error: {str(e)}"
             self.logger.warning(f"detector heartbeat failed: {error_msg}")
