@@ -137,15 +137,24 @@ def create_app():
     def snapshot():
         try:
             max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "960"))
-            # Если включён непрерывный захват (по умолчанию), отдаём последний кадр из глобального граббера — это
-            # устраняет конфликты rpicam-still с rpicam-vid и 500-ошибки.
+            # Если включён непрерывный захват (по умолчанию), отдаём кадр из глобального граббера.
+            # ВАЖНО: больше не падаем в rpicam-still, чтобы не конфликтовать с rpicam-vid.
             use_grabber = os.getenv("SNAPSHOT_USE_GRABBER", os.getenv("OVERLAY_CONTINUOUS", "1")).strip() == "1"
             jpeg_data = None
             if use_grabber:
-                ensure_grabber(max_side=max_side, fps=int(os.getenv("OVERLAY_CAPTURE_FPS", "5")))
-                jpeg_data = get_grabber_frame()
-            if not jpeg_data:
-                # fallback на прямой снимок
+                ensure_grabber(max_side=max_side, fps=int(os.getenv("OVERLAY_CAPTURE_FPS", "8")))
+                # Подождём немного первый кадр из граббера (без блокировок камеры)
+                deadline = time.time() + float(os.getenv("SNAPSHOT_GRABBER_WAIT_S", "0.7"))
+                while jpeg_data is None and time.time() < deadline:
+                    jpeg_data = get_grabber_frame()
+                    if jpeg_data:
+                        break
+                    time.sleep(0.02)
+                if jpeg_data is None:
+                    # Нет свежего кадра: сообщаем «занято», детектор ретраит
+                    return jsonify({"error": "camera busy"}), 503
+            else:
+                # Явно запросили старый путь: разовый снимок с сериализацией
                 jpeg_data = capture_jpeg(max_side=max_side)
             return Response(jpeg_data, mimetype="image/jpeg"), 200
         except Exception as e:

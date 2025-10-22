@@ -35,9 +35,9 @@ class OverlayStream:
         self.tail_bytes = int(os.getenv('OVERLAY_TAIL_BYTES', '65536'))
         self.max_side = int(os.getenv('OVERLAY_MAX_SIDE', '640'))
         self.det_max_age_ms = int(os.getenv('OVERLAY_DET_MAX_AGE_MS', '4000'))
-        # По умолчанию делаем поток плавнее: можно менять через ENV
-        self.output_fps = int(os.getenv('OVERLAY_FPS', '12'))
-        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '8'))
+        # По умолчанию делаем поток ещё плавнее (всё переопределяется через ENV)
+        self.output_fps = int(os.getenv('OVERLAY_FPS', '15'))
+        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '12'))
         self.continuous = os.getenv('OVERLAY_CONTINUOUS', '1') == '1'
         
         # YOLO fallback environment variables
