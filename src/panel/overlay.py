@@ -237,130 +237,154 @@ class OverlayStream:
     
     def generate_frames(self):
         """Generate MJPEG frames with overlays"""
-        first = True
+        last_send_time = 0.0
+        last_frame_data = None
         
         while True:
             try:
-                # Fast track for first frame - no blocking operations
-                if first:
-                    frame_data = self.last_ok_frame or self._create_no_frame()
-                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame_data)).encode() + b"\r\n\r\n" + frame_data + b"\r\n"
-                    self.logger.info("overlay first frame sent (instant)")
-                    first = False
+                current_time = time.time()
+                
+                # First frame: send immediately, even if camera unavailable
+                if last_send_time == 0.0:
+                    frame_data = self.make_frame_bytes()
+                    last_frame_data = frame_data
+                    last_send_time = current_time
+                    
+                    # Log first frame
+                    self.logger.info(f"overlay frame sent: bytes={len(frame_data)}, dets=0, draw_ms=0, fresh=True")
+                    
+                    # Yield first frame
+                    yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
                     time.sleep(self.output_interval)
                     continue
                 
-                # Get snapshot - subsequent frames
-                current_time = time.time()
-                if current_time - self.last_capture_time >= self.capture_interval:
-                    jpeg_data = self._get_snapshot()  # Blocking capture
-                else:
-                    jpeg_data = self._get_snapshot(non_blocking=True)  # Non-blocking
-                
-                # Ensure we always have frame data to prevent hanging
-                if not jpeg_data:
-                    jpeg_data = self.last_ok_frame or self._create_no_frame()
-                
-                # Get recent detection with age check
-                detection_event = self._get_recent_detection()
-                detections = []
-                age_ms = 0
-                fresh = time.time() - self.last_capture_time < self.capture_interval
-                
-                if detection_event:
-                    # Calculate age from event timestamp
-                    try:
-                        event_ts = datetime.fromisoformat(detection_event["ts"].replace('Z', '+00:00'))
-                        now_utc = datetime.now(event_ts.tzinfo)
-                        age_ms = int((now_utc - event_ts).total_seconds() * 1000)
-                        
-                        # Only use if within age limit
-                        if age_ms <= self.det_max_age_ms:
-                            detections = detection_event.get("detections", [])
-                    except Exception as e:
-                        self.logger.warning(f"Failed to parse event timestamp: {e}")
-                        detection_event = None
-                
-                # Process image
-                start_draw = time.time()
-                if CV2_AVAILABLE:
-                    # OpenCV path
-                    image_np = cv2.imdecode(np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR)
-                    if image_np is not None:
-                        # Calculate scale factors if we have detection event
-                        scale_x = scale_y = 1.0
-                        evt_wh = "0x0"
-                        if detection_event and "image" in detection_event:
-                            evt_w = max(1, int(detection_event["image"].get("width", 0)))
-                            evt_h = max(1, int(detection_event["image"].get("height", 0)))
-                            evt_wh = f"{evt_w}x{evt_h}"
-                            frame_h, frame_w = image_np.shape[:2]
-                            scale_x = frame_w / evt_w
-                            scale_y = frame_h / evt_h
-                        
-                        # Draw overlays
-                        if detections:
-                            image_np = self._draw_overlays_cv2(image_np, detections, scale_x, scale_y)
-                        
-                        # Add timestamp in top-right corner for live stream indication
-                        timestamp = datetime.now().strftime("%H:%M:%S")
-                        cv2.putText(image_np, timestamp, (image_np.shape[1] - 100, 30), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                        
-                        # Encode back to JPEG
-                        _, jpeg_encoded = cv2.imencode('.jpg', image_np)
-                        frame_data = jpeg_encoded.tobytes()
-                        
-                        # Get frame dimensions for logging
-                        frame_wh = f"{frame_w}x{frame_h}"
+                # Check if it's time to send next frame
+                if current_time - last_send_time >= self.output_interval:
+                    # Check for timeout (2.5s silence)
+                    if current_time - last_send_time > 2.5:
+                        # Send keepalive
+                        yield b"--frame\r\nContent-Type: text/plain\r\n\r\n# keepalive\r\n"
+                        self.logger.info("overlay keepalive sent")
+                        last_send_time = current_time
+                        time.sleep(self.output_interval)
+                        continue
+                    
+                    # Try to get fresh frame
+                    fresh_frame = self.make_frame_bytes()
+                    if fresh_frame:
+                        frame_data = fresh_frame
+                        last_frame_data = frame_data
                     else:
-                        frame_data = jpeg_data
-                        frame_wh = "0x0"
-                else:
-                    # PIL path
-                    image = Image.open(io.BytesIO(jpeg_data))
+                        # Reuse last frame if no fresh data
+                        frame_data = last_frame_data or self._create_no_frame()
                     
-                    # Calculate scale factors if we have detection event
-                    scale_x = scale_y = 1.0
-                    evt_wh = "0x0"
-                    if detection_event and "image" in detection_event:
-                        evt_w = max(1, int(detection_event["image"].get("width", 0)))
-                        evt_h = max(1, int(detection_event["image"].get("height", 0)))
-                        evt_wh = f"{evt_w}x{evt_h}"
-                        frame_w, frame_h = image.size
-                        scale_x = frame_w / evt_w
-                        scale_y = frame_h / evt_h
+                    # Log frame
+                    detections_count = 0  # Simplified for now
+                    draw_time = 0  # Simplified for now
+                    fresh = fresh_frame is not None
+                    self.logger.info(f"overlay frame sent: bytes={len(frame_data)}, dets={detections_count}, draw_ms={draw_time}, fresh={fresh}")
                     
-                    # Draw overlays
-                    if detections:
-                        image = self._draw_overlays_pil(image, detections, scale_x, scale_y)
-                    
-                    # Add timestamp in top-right corner for live stream indication
-                    timestamp = datetime.now().strftime("%H:%M:%S")
-                    draw = ImageDraw.Draw(image)
-                    font = self._get_font(12)
-                    draw.text((image.size[0] - 100, 10), timestamp, fill=(255, 255, 255), font=font)
-                    
-                    # Convert back to JPEG
-                    output = io.BytesIO()
-                    image.save(output, format='JPEG', quality=70)
-                    frame_data = output.getvalue()
-                    
-                    # Get frame dimensions for logging
-                    frame_w, frame_h = image.size
-                    frame_wh = f"{frame_w}x{frame_h}"
+                    # Yield frame
+                    yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
+                    last_send_time = current_time
                 
-                draw_time = int((time.time() - start_draw) * 1000)
-                self.logger.info(f"overlay frame: dets={len(detections)}, age_ms={age_ms}, draw_ms={draw_time}, fresh={fresh}, first={False}")
-                
-                # Yield MJPEG frame with proper headers
-                yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
-                
-                time.sleep(self.output_interval)
+                time.sleep(0.1)  # Small sleep to prevent busy waiting
                 
             except Exception as e:
-                self.logger.warning(f"Overlay stream error: {e}")
+                self.logger.warning(f"overlay stream error: {e}")
+                # Generate keepalive on error
+                yield b"--frame\r\nContent-Type: text/plain\r\n\r\n# keepalive\r\n"
                 time.sleep(0.5)
+    
+    def make_frame_bytes(self) -> bytes:
+        """Generate a single JPEG frame with overlays"""
+        start_draw = time.time()
+        
+        # Get snapshot
+        jpeg_data = self._get_snapshot()
+        if not jpeg_data:
+            jpeg_data = self._create_no_frame()
+        
+        # Get recent detection with age check
+        detection_event = self._get_recent_detection()
+        detections = []
+        age_ms = 0
+        
+        if detection_event:
+            # Calculate age from event timestamp
+            try:
+                event_ts = datetime.fromisoformat(detection_event["ts"].replace('Z', '+00:00'))
+                now_utc = datetime.now(event_ts.tzinfo)
+                age_ms = int((now_utc - event_ts).total_seconds() * 1000)
+                
+                # Only use if within age limit
+                if age_ms <= self.det_max_age_ms:
+                    detections = detection_event.get("detections", [])
+            except Exception as e:
+                self.logger.warning(f"Failed to parse event timestamp: {e}")
+                detection_event = None
+        
+        # Process image
+        if CV2_AVAILABLE:
+            # OpenCV path
+            image_np = cv2.imdecode(np.frombuffer(jpeg_data, np.uint8), cv2.IMREAD_COLOR)
+            if image_np is not None:
+                # Calculate scale factors if we have detection event
+                scale_x = scale_y = 1.0
+                if detection_event and "image" in detection_event:
+                    evt_w = max(1, int(detection_event["image"].get("width", 0)))
+                    evt_h = max(1, int(detection_event["image"].get("height", 0)))
+                    frame_h, frame_w = image_np.shape[:2]
+                    scale_x = frame_w / evt_w
+                    scale_y = frame_h / evt_h
+                
+                # Draw overlays
+                if detections:
+                    image_np = self._draw_overlays_cv2(image_np, detections, scale_x, scale_y)
+                
+                # Add timestamp in top-right corner for live stream indication
+                timestamp = datetime.now().strftime("%H:%M:%S")
+                cv2.putText(image_np, timestamp, (image_np.shape[1] - 100, 30), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                
+                # Encode back to JPEG
+                _, jpeg_encoded = cv2.imencode('.jpg', image_np, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                frame_data = jpeg_encoded.tobytes()
+            else:
+                frame_data = jpeg_data
+        else:
+            # PIL path
+            image = Image.open(io.BytesIO(jpeg_data))
+            
+            # Calculate scale factors if we have detection event
+            scale_x = scale_y = 1.0
+            if detection_event and "image" in detection_event:
+                evt_w = max(1, int(detection_event["image"].get("width", 0)))
+                evt_h = max(1, int(detection_event["image"].get("height", 0)))
+                frame_w, frame_h = image.size
+                scale_x = frame_w / evt_w
+                scale_y = frame_h / evt_h
+            
+            # Draw overlays
+            if detections:
+                image = self._draw_overlays_pil(image, detections, scale_x, scale_y)
+            
+            # Add timestamp in top-right corner for live stream indication
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            draw = ImageDraw.Draw(image)
+            font = self._get_font(12)
+            draw.text((image.size[0] - 100, 10), timestamp, fill=(255, 255, 255), font=font)
+            
+            # Convert back to JPEG
+            output = io.BytesIO()
+            image.save(output, format='JPEG', quality=80)
+            frame_data = output.getvalue()
+        
+        return frame_data
+    
+    def generate_single_frame(self) -> bytes:
+        """Generate a single frame - alias for make_frame_bytes()"""
+        return self.make_frame_bytes()
     
     def render_single_frame(self) -> bytes:
         """Render a single frame with overlays for /overlay.jpg endpoint"""

@@ -214,23 +214,23 @@ def create_app():
     @app.route("/overlay.mjpg")
     def overlay_mjpeg():
         stream = OverlayStream(logger=app.logger)
-        gen = stream.generate_frames()  # новый генератор на каждый запрос
+        gen = stream.generate_frames()
         resp = Response(stream_with_context(gen),
-                        mimetype="multipart/x-mixed-replace; boundary=frame")
-        # no-cache — важно для некоторых клиентов/VLC
+                        mimetype="multipart/x-mixed-replace; boundary=frame",
+                        direct_passthrough=True)
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         resp.headers["Pragma"] = "no-cache"
         resp.headers["Expires"] = "0"
         return resp
 
     @app.route("/stream/overlay.mjpg")
-    def overlay_mjpeg_compat():
+    def overlay_mjpeg_alias():
         return overlay_mjpeg()
 
     @app.route("/overlay.jpg")
     def overlay_single():
         stream = OverlayStream(logger=app.logger)
-        frame = stream.render_single_frame()
+        frame = stream.generate_single_frame()
         resp = make_response(frame)
         resp.headers["Content-Type"] = "image/jpeg"
         resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
@@ -239,7 +239,7 @@ def create_app():
         return resp
 
     @app.route("/stream/overlay.jpg")
-    def overlay_single_compat():
+    def overlay_single_alias():
         return overlay_single()
 
     return app
