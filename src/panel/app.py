@@ -6,7 +6,7 @@ import sys
 import time
 from functools import partial
 from os.path import abspath, join, dirname
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context, make_response
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context, make_response, render_template
 
 # Add src directory to sys.path for systemd execution
 # (systemd runs app.py as script, not as module)
@@ -47,6 +47,11 @@ def create_app():
         value = os.getenv(var)
         if value is not None:
             logger.info(f"overlay env {var}={value}")
+
+    @app.get("/")
+    def index():
+        """Main panel page"""
+        return render_template('index.html')
 
     @app.get("/healthz")
     def healthz():
@@ -104,7 +109,7 @@ def create_app():
 
     @app.get("/api/health")
     def api_health():
-        """Health check with camera status"""
+        """Health check with camera and detector status"""
         try:
             # Check if camera processes are running
             result = subprocess.run(
@@ -114,23 +119,37 @@ def create_app():
             )
             
             camera_processes = result.stdout.strip()
+            camera_status = "busy" if camera_processes else "ok"
+            
+            # Check detector service status
+            try:
+                detector_result = subprocess.run(
+                    ["systemctl", "is-active", "dd5ka-detector.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                detector_status = detector_result.stdout.strip()
+            except Exception:
+                detector_status = "unknown"
+            
+            response = {
+                "status": "ok",
+                "camera": camera_status,
+                "detector": detector_status
+            }
+            
             if camera_processes:
-                return {
-                    "status": "ok",
-                    "camera": "busy",
-                    "processes": len(camera_processes.split('\n')) if camera_processes else 0
-                }, 200
-            else:
-                return {
-                    "status": "ok", 
-                    "camera": "ok"
-                }, 200
+                response["processes"] = len(camera_processes.split('\n')) if camera_processes else 0
+                
+            return response, 200
                 
         except Exception as e:
             logger.error(f"health check failed: {e}")
             return {
                 "status": "error",
-                "camera": "error"
+                "camera": "error",
+                "detector": "unknown"
             }, 500
 
     @app.get("/snapshot")
@@ -266,6 +285,154 @@ def create_app():
     @app.route("/stream/overlay.jpg")
     def overlay_single_alias():
         return overlay_single()
+
+    # Detector control endpoints
+    @app.get("/api/detector/status")
+    def detector_status():
+        """Get detector service status"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "is-active", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            status = result.stdout.strip()
+            return {"status": status}, 200
+        except Exception as e:
+            logger.error(f"detector status check failed: {e}")
+            return {"status": "unknown", "error": str(e)}, 500
+
+    @app.post("/api/detector/start")
+    def detector_start():
+        """Start detector service"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "start", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return {"ok": True}, 200
+            else:
+                return {"ok": False, "error": result.stderr}, 500
+        except Exception as e:
+            logger.error(f"detector start failed: {e}")
+            return {"ok": False, "error": str(e)}, 500
+
+    @app.post("/api/detector/stop")
+    def detector_stop():
+        """Stop detector service"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "stop", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return {"ok": True}, 200
+            else:
+                return {"ok": False, "error": result.stderr}, 500
+        except Exception as e:
+            logger.error(f"detector stop failed: {e}")
+            return {"ok": False, "error": str(e)}, 500
+
+    @app.post("/api/detector/restart")
+    def detector_restart():
+        """Restart detector service"""
+        try:
+            result = subprocess.run(
+                ["systemctl", "restart", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                return {"ok": True}, 200
+            else:
+                return {"ok": False, "error": result.stderr}, 500
+        except Exception as e:
+            logger.error(f"detector restart failed: {e}")
+            return {"ok": False, "error": str(e)}, 500
+
+    # LED test endpoint
+    @app.post("/api/led/test")
+    def led_test():
+        """Test LED on BCM GPIO17"""
+        try:
+            # Try to import lgpio
+            try:
+                import lgpio
+            except ImportError:
+                return {"ok": False, "error": "lgpio not available"}, 500
+
+            # Open GPIO chip
+            chip = lgpio.gpiochip_open(0)
+            if chip < 0:
+                return {"ok": False, "error": "Failed to open GPIO chip"}, 500
+
+            try:
+                # Set GPIO17 as output
+                lgpio.gpio_claim_output(chip, 17, 0)
+                
+                # Flash LED (150ms high, 150ms low)
+                lgpio.gpio_write(chip, 17, 1)
+                time.sleep(0.15)
+                lgpio.gpio_write(chip, 17, 0)
+                time.sleep(0.15)
+                
+                return {"ok": True}, 200
+                
+            finally:
+                # Clean up
+                lgpio.gpio_free(chip, 17)
+                lgpio.gpiochip_close(chip)
+                
+        except Exception as e:
+            logger.error(f"LED test failed: {e}")
+            return {"ok": False, "error": str(e)}, 500
+
+    # Logs endpoint
+    @app.get("/api/logs/last")
+    def logs_last():
+        """Get last N events from detections.jsonl"""
+        try:
+            n = min(int(request.args.get('n', 10)), 50)  # Max 50 events
+            LOGS_DIR = "/home/nemez/project_root/logs"
+            DETECTIONS_JSONL = f"{LOGS_DIR}/detections.jsonl"
+            
+            events = []
+            if os.path.exists(DETECTIONS_JSONL):
+                with open(DETECTIONS_JSONL, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    # Get last n non-empty lines
+                    for line in reversed(lines[-n*2:]):  # Read more lines to account for empty ones
+                        line = line.strip()
+                        if line and len(events) < n:
+                            try:
+                                event = json.loads(line)
+                                events.append(event)
+                            except json.JSONDecodeError:
+                                continue  # Skip malformed lines
+            
+            return {"events": events}, 200
+            
+        except Exception as e:
+            logger.error(f"logs read failed: {e}")
+            return {"events": [], "error": str(e)}, 500
+
+    # NetworkManager status (stub)
+    @app.get("/api/nm/status")
+    def nm_status():
+        """NetworkManager status stub"""
+        return {
+            "mode": "client",
+            "ifname": "wlan0", 
+            "connected": False,
+            "ssid": None
+        }, 200
 
     return app
 

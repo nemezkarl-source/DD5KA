@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="toolbar">
+    <div class="toolbar-left">
+        <div class="logo">
+            <span class="logo-text">DD::5::KA</span>
+            <span class="logo-subtitle">Drone detector — SETKOMET</span>
+        </div>
+    </div>
+    <div class="toolbar-right">
+        <button id="detector-start" class="btn btn-primary">Запуск детектора</button>
+        <button id="detector-stop" class="btn btn-secondary">Остановка детектора</button>
+        <button id="detector-restart" class="btn btn-warning">Рестарт сервиса</button>
+        <button id="led-test" class="btn btn-accent">Проверка LED</button>
+    </div>
+</div>
+
+<div class="main-content">
+    <div class="left-panel">
+        <div class="panel-header">
+            <h3>Связь</h3>
+        </div>
+        <div class="network-status">
+            <div class="status-item">
+                <span class="label">Режим:</span>
+                <span id="nm-mode" class="value">—</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Интерфейс:</span>
+                <span id="nm-ifname" class="value">—</span>
+            </div>
+            <div class="status-item">
+                <span class="label">SSID:</span>
+                <span id="nm-ssid" class="value">—</span>
+            </div>
+            <div class="status-item">
+                <span class="label">Подключен:</span>
+                <span id="nm-connected" class="value">—</span>
+            </div>
+        </div>
+        <div class="network-controls">
+            <button class="btn btn-disabled" disabled>Включить AP</button>
+            <button class="btn btn-disabled" disabled>Выключить AP</button>
+            <button class="btn btn-disabled" disabled>Подключиться к сети…</button>
+        </div>
+    </div>
+
+    <div class="center-panel">
+        <div class="stream-container">
+            <div class="stream-header">
+                <h3>Overlay Stream</h3>
+            </div>
+            <div class="stream-wrapper">
+                <img id="stream-image" src="/stream/overlay.mjpg" alt="Live Stream" />
+            </div>
+        </div>
+    </div>
+
+    <div class="right-panel">
+        <div class="panel-header">
+            <h3>Статус</h3>
+        </div>
+        <div class="status-indicators">
+            <div class="status-item">
+                <span class="label">Сервис запущен</span>
+                <div id="detector-status" class="status-dot bad"></div>
+            </div>
+            <div class="status-item">
+                <span class="label">Камера готова</span>
+                <div id="camera-status" class="status-dot bad"></div>
+            </div>
+            <div class="status-item">
+                <span class="label">LED ожидает</span>
+                <div id="led-status" class="status-dot bad"></div>
+            </div>
+            <div class="status-item">
+                <span class="label">Сеткомет готов</span>
+                <div id="setkomet-status" class="status-dot bad"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="events-panel">
+    <div class="panel-header">
+        <h3>Последние события</h3>
+    </div>
+    <div id="events-list" class="events-list">
+        <div class="event-item">
+            <span class="event-time">—</span>
+            <span class="event-class">—</span>
+            <span class="event-conf">—</span>
+            <span class="event-bbox">—</span>
+        </div>
+    </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+{% endblock %}
