@@ -35,9 +35,9 @@ class OverlayStream:
         self.tail_bytes = int(os.getenv('OVERLAY_TAIL_BYTES', '65536'))
         self.max_side = int(os.getenv('OVERLAY_MAX_SIDE', '640'))
         self.det_max_age_ms = int(os.getenv('OVERLAY_DET_MAX_AGE_MS', '4000'))
-        # По умолчанию делаем поток визуально плавнее; значения можно переопределить через ENV
-        self.output_fps = int(os.getenv('OVERLAY_FPS', '10'))
-        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '5'))
+        # По умолчанию делаем поток плавнее: можно менять через ENV
+        self.output_fps = int(os.getenv('OVERLAY_FPS', '12'))
+        self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '8'))
         self.continuous = os.getenv('OVERLAY_CONTINUOUS', '1') == '1'
         
         # YOLO fallback environment variables
@@ -366,65 +366,60 @@ class OverlayStream:
         """Generate MJPEG frames with overlays"""
         last_send_time = 0.0
         last_frame_data = None
+        next_log = time.time() + 5.0
+        sent_count = 0
         
         while True:
             try:
                 current_time = time.time()
                 
-                # First frame: send immediately, even if camera unavailable
+                # Первую посылку отдадим сразу
                 if last_send_time == 0.0:
                     frame_data = self.make_frame_bytes()
                     last_frame_data = frame_data
                     last_send_time = current_time
-                    # Лог первого кадра с реальной статистикой
-                    self.logger.info(
-                        f"overlay frame sent: bytes={len(frame_data)}, dets={self._last_dets_count}, "
-                        f"draw_ms={self._last_draw_ms}, fresh=True"
-                    )
-                    
-                    # Yield first frame
+                    sent_count += 1
                     yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
-                    time.sleep(self.output_interval)
+                    # Точное выравнивание интервала
+                    target = last_send_time + self.output_interval
+                    sleep_s = max(0.0, target - time.time())
+                    if sleep_s > 0:
+                        time.sleep(sleep_s)
                     continue
                 
-                # Check if it's time to send next frame
+                # Время отправлять следующий кадр? Пейсинг по точному таймеру
                 if current_time - last_send_time >= self.output_interval:
-                    # Check for timeout (2.5s silence)
-                    if current_time - last_send_time > 2.5:
-                        # Send keepalive
-                        yield b"--frame\r\nContent-Type: text/plain\r\n\r\n# keepalive\r\n"
-                        self.logger.info("overlay keepalive sent")
-                        last_send_time = current_time
-                        time.sleep(self.output_interval)
-                        continue
-                    
-                    # Try to get fresh frame (не блокируем камеру — используем последний захваченный кадр)
                     fresh_frame = self.make_frame_bytes()
                     if fresh_frame:
                         frame_data = fresh_frame
                         last_frame_data = frame_data
                     else:
-                        # Reuse last frame if no fresh data
                         frame_data = last_frame_data or self._create_no_frame()
-                    
-                    # Лог последующих кадров с реальной статистикой
-                    fresh = fresh_frame is not None
-                    self.logger.info(
-                        f"overlay frame sent: bytes={len(frame_data)}, dets={self._last_dets_count}, "
-                        f"draw_ms={self._last_draw_ms}, fresh={fresh}"
-                    )
-                    
-                    # Yield frame
+
                     yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
                     last_send_time = current_time
-                
-                time.sleep(0.1)  # Small sleep to prevent busy waiting
+                    sent_count += 1
+
+                # Аггрегированное логирование раз в ~5 секунд
+                if current_time >= next_log:
+                    self.logger.info(
+                        f"overlay stream: fps_out={self.output_fps}, fps_cap={self.capture_fps}, "
+                        f"last_bytes={len(last_frame_data) if last_frame_data else 0}, "
+                        f"last_dets={self._last_dets_count}, last_draw_ms={self._last_draw_ms}, "
+                        f"sent_in_5s={sent_count}"
+                    )
+                    sent_count = 0
+                    next_log = current_time + 5.0
+
+                # Спим до целевого времени следующего кадра
+                target = last_send_time + self.output_interval
+                sleep_s = max(0.0, target - time.time())
+                if sleep_s > 0:
+                    time.sleep(sleep_s)
                 
             except Exception as e:
                 self.logger.warning(f"overlay stream error: {e}")
-                # Generate keepalive on error
-                yield b"--frame\r\nContent-Type: text/plain\r\n\r\n# keepalive\r\n"
-                time.sleep(0.5)
+                time.sleep(0.2)
     
     def make_frame_bytes(self) -> bytes:
         """Generate a single JPEG frame with overlays"""
@@ -487,7 +482,7 @@ class OverlayStream:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 
                 # Encode back to JPEG
-                _, jpeg_encoded = cv2.imencode('.jpg', image_np, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                _, jpeg_encoded = cv2.imencode('.jpg', image_np, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 frame_data = jpeg_encoded.tobytes()
             else:
                 frame_data = jpeg_data
@@ -516,7 +511,7 @@ class OverlayStream:
             
             # Convert back to JPEG
             output = io.BytesIO()
-            image.save(output, format='JPEG', quality=80)
+            image.save(output, format='JPEG', quality=70)
             frame_data = output.getvalue()
         
         # Сохраняем статистику для логов
@@ -586,7 +581,7 @@ class OverlayStream:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
                 
                 # Encode back to JPEG
-                _, jpeg_encoded = cv2.imencode('.jpg', image_np, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                _, jpeg_encoded = cv2.imencode('.jpg', image_np, [cv2.IMWRITE_JPEG_QUALITY, 70])
                 frame_data = jpeg_encoded.tobytes()
             else:
                 frame_data = jpeg_data
@@ -615,7 +610,7 @@ class OverlayStream:
             
             # Convert back to JPEG
             output = io.BytesIO()
-            image.save(output, format='JPEG', quality=80)
+            image.save(output, format='JPEG', quality=70)
             frame_data = output.getvalue()
         
         draw_time = int((time.time() - start_draw) * 1000)
