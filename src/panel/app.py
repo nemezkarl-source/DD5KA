@@ -34,6 +34,19 @@ def create_app():
     
     logger = logging.getLogger(__name__)
     logger.info("panel started")
+    
+    # Log overlay environment variables
+    overlay_env_vars = [
+        "OVERLAY_DETECTIONS_FILE", "OVERLAY_MIN_CONF", "OVERLAY_TAIL_BYTES",
+        "OVERLAY_MAX_SIDE", "OVERLAY_DET_MAX_AGE_MS", "OVERLAY_FPS", "OVERLAY_CAPTURE_FPS",
+        "OVERLAY_YOLO_FALLBACK", "OVERLAY_YOLO_MODEL", "OVERLAY_YOLO_CONF",
+        "OVERLAY_YOLO_IOU", "OVERLAY_YOLO_IMGSZ", "OVERLAY_YOLO_FPS"
+    ]
+    
+    for var in overlay_env_vars:
+        value = os.getenv(var)
+        if value is not None:
+            logger.info(f"overlay env {var}={value}")
 
     @app.get("/healthz")
     def healthz():

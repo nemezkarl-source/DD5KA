@@ -37,14 +37,28 @@ class OverlayStream:
         self.output_fps = int(os.getenv('OVERLAY_FPS', '4'))
         self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '2'))
         
+        # YOLO fallback environment variables
+        self.yolo_fallback = os.getenv('OVERLAY_YOLO_FALLBACK', '0') == '1'
+        self.yolo_model_path = os.getenv('OVERLAY_YOLO_MODEL', '/home/nemez/DD5KA/models/cpu/best.pt')
+        self.yolo_conf = float(os.getenv('OVERLAY_YOLO_CONF', '0.12'))
+        self.yolo_iou = float(os.getenv('OVERLAY_YOLO_IOU', '0.50'))
+        self.yolo_imgsz = int(os.getenv('OVERLAY_YOLO_IMGSZ', '640'))
+        self.yolo_fps = int(os.getenv('OVERLAY_YOLO_FPS', '2'))
+        
         # Calculate intervals
         self.output_interval = 1.0 / self.output_fps
         self.capture_interval = 1.0 / self.capture_fps
+        self.yolo_interval = 1.0 / self.yolo_fps
         
         # Frame cache
         self.last_ok_frame: Optional[bytes] = None
         self.last_capture_time = 0.0
         self.last_error_log_time = 0.0
+        
+        # YOLO fallback state
+        self._yolo_model = None
+        self._last_yolo_inference = 0.0
+        self._last_yolo_detections = []
         
         # Detection file reader state
         self._det_fp: Optional[io.TextIOWrapper] = None
@@ -72,6 +86,81 @@ class OverlayStream:
             return font
         except:
             return ImageFont.load_default()
+    
+    def _load_yolo_model(self):
+        """Lazy load YOLO model"""
+        if self._yolo_model is None and self.yolo_fallback:
+            try:
+                from ultralytics import YOLO
+                self._yolo_model = YOLO(self.yolo_model_path)
+                self.logger.info(f"YOLO fallback model loaded: {self.yolo_model_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to load YOLO model: {e}")
+                self._yolo_model = False  # Mark as failed to avoid retries
+    
+    def _run_yolo_inference(self, image_data: bytes) -> List[Dict]:
+        """Run YOLO inference on image data"""
+        if not self.yolo_fallback or self._yolo_model is False:
+            return []
+        
+        current_time = time.time()
+        if current_time - self._last_yolo_inference < self.yolo_interval:
+            return self._last_yolo_detections
+        
+        try:
+            # Lazy load model
+            self._load_yolo_model()
+            if self._yolo_model is None or self._yolo_model is False:
+                return []
+            
+            start_infer = time.time()
+            
+            # Convert bytes to PIL Image
+            image = Image.open(io.BytesIO(image_data))
+            
+            # Run inference
+            results = self._yolo_model.predict(
+                image, 
+                conf=self.yolo_conf, 
+                iou=self.yolo_iou, 
+                imgsz=self.yolo_imgsz,
+                verbose=False
+            )
+            
+            infer_time = int((time.time() - start_infer) * 1000)
+            
+            # Process results
+            detections = []
+            for result in results:
+                if result.boxes is not None:
+                    boxes = result.boxes.xyxy.cpu().numpy()
+                    confs = result.boxes.conf.cpu().numpy()
+                    class_ids = result.boxes.cls.cpu().numpy()
+                    
+                    for i in range(len(boxes)):
+                        class_id = int(class_ids[i])
+                        class_name = result.names.get(class_id, f"class_{class_id}")
+                        
+                        # Check if class name contains "dron" or "drone"
+                        display_name = "DRON" if "dron" in class_name.lower() else class_name
+                        
+                        detections.append({
+                            "bbox_xyxy": boxes[i].tolist(),
+                            "conf": float(confs[i]),
+                            "class_name": display_name,
+                            "class_id": class_id
+                        })
+            
+            self._last_yolo_inference = current_time
+            self._last_yolo_detections = detections
+            
+            self.logger.info(f"overlay fallback yolo: dets={len(detections)}, conf={self.yolo_conf}, imgsz={self.yolo_imgsz}, infer_ms={infer_time}")
+            
+            return detections
+            
+        except Exception as e:
+            self.logger.warning(f"YOLO inference failed: {e}")
+            return []
     
     def _get_recent_detection(self) -> Optional[Dict]:
         """Read recent detection events from tail of file efficiently"""
@@ -323,6 +412,12 @@ class OverlayStream:
             except Exception as e:
                 self.logger.warning(f"Failed to parse event timestamp: {e}")
                 detection_event = None
+        
+        # YOLO fallback: if no fresh detections, try YOLO inference
+        if not detections and self.yolo_fallback:
+            yolo_detections = self._run_yolo_inference(jpeg_data)
+            if yolo_detections:
+                detections = yolo_detections
         
         # Process image
         if CV2_AVAILABLE:
