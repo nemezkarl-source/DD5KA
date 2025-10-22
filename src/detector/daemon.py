@@ -4,6 +4,7 @@ DD-5KA Detector Daemon (CH4)
 Heartbeat polling of panel /snapshot endpoint
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +43,18 @@ class DetectorDaemon:
         self.min_conf = float(os.getenv('DETECTOR_MIN_CONF', '0.55'))
         self.allow_classes = os.getenv('DETECTOR_CLASS_ALLOW', 'drone,dron,дрон,uav')
         self.max_side = int(os.getenv('IMG_MAX_SIDE', '1280'))
+        
+        # Snapshot saving parameters
+        self.save_dir = os.getenv('DETECTOR_SAVE_DIR', '/home/nemez/project_root/snaps')
+        self.save_min_conf = float(os.getenv('DETECTOR_SAVE_MIN_CONF', '0.55'))
+        
+        # Alert debounce parameters
+        self.alert_min_conf = float(os.getenv('DETECTOR_ALERT_MIN_CONF', '0.60'))
+        self.alert_consec = int(os.getenv('DETECTOR_ALERT_CONSEC', '2'))
+        
+        # Debounce state
+        self._last_boxes = []
+        self._consecutive_count = 0
         
         # Class ID filter
         class_ids_str = os.getenv('DETECTOR_CLASS_IDS', '')
@@ -92,6 +105,161 @@ class DetectorDaemon:
         """Handle SIGINT/SIGTERM gracefully"""
         self.logger.info("detector stopping")
         self.running = False
+        
+    def _calculate_iou(self, box1, box2):
+        """Calculate Intersection over Union (IoU) for two bounding boxes"""
+        # box format: [x1, y1, x2, y2]
+        x1_1, y1_1, x2_1, y2_1 = box1
+        x1_2, y1_2, x2_2, y2_2 = box2
+        
+        # Calculate intersection
+        x1_i = max(x1_1, x1_2)
+        y1_i = max(y1_1, y1_2)
+        x2_i = min(x2_1, x2_2)
+        y2_i = min(y2_1, y2_2)
+        
+        if x2_i <= x1_i or y2_i <= y1_i:
+            return 0.0
+        
+        intersection = (x2_i - x1_i) * (y2_i - y1_i)
+        
+        # Calculate areas
+        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+        union = area1 + area2 - intersection
+        
+        return intersection / union if union > 0 else 0.0
+    
+    def _save_snapshot(self, jpeg_data, detection_data):
+        """Save snapshot if any detection meets save threshold"""
+        if not detection_data or "detections" not in detection_data:
+            return None, None
+        
+        # Check if any detection meets save threshold
+        should_save = any(det.get("conf", 0) >= self.save_min_conf for det in detection_data["detections"])
+        if not should_save:
+            return None, None
+        
+        try:
+            # Calculate SHA1
+            sha1_hash = hashlib.sha1(jpeg_data).hexdigest()
+            
+            # Create directory structure: YYYY/MM/DD/
+            now = datetime.utcnow()
+            date_path = os.path.join(
+                self.save_dir,
+                now.strftime("%Y"),
+                now.strftime("%m"),
+                now.strftime("%d")
+            )
+            os.makedirs(date_path, exist_ok=True)
+            
+            # Generate filename: ts_sha1.jpg
+            timestamp = int(now.timestamp())
+            filename = f"{timestamp}_{sha1_hash}.jpg"
+            filepath = os.path.join(date_path, filename)
+            
+            # Save file
+            with open(filepath, 'wb') as f:
+                f.write(jpeg_data)
+            
+            self.logger.info(f"saved snapshot {filename}")
+            return filepath, sha1_hash
+            
+        except Exception as e:
+            self.logger.error(f"failed to save snapshot: {e}")
+            return None, None
+    
+    def _check_alert_debounce(self, detection_data, image_path, image_sha1):
+        """Check for alert conditions with debounce logic"""
+        if not detection_data or "detections" not in detection_data:
+            # Reset on empty detections
+            self._last_boxes = []
+            self._consecutive_count = 0
+            return False
+        
+        current_boxes = []
+        current_ts = datetime.utcnow().isoformat() + "Z"
+        
+        # Filter detections by alert confidence
+        alert_detections = [det for det in detection_data["detections"] 
+                           if det.get("conf", 0) >= self.alert_min_conf]
+        
+        if not alert_detections:
+            # Reset if no high-confidence detections
+            self._last_boxes = []
+            self._consecutive_count = 0
+            return False
+        
+        # Extract bounding boxes
+        for det in alert_detections:
+            if "bbox_xyxy" in det:
+                current_boxes.append({
+                    "bbox": det["bbox_xyxy"],
+                    "conf": det.get("conf", 0),
+                    "ts": current_ts
+                })
+        
+        # Check for IoU overlap with previous frame
+        has_overlap = False
+        if self._last_boxes:
+            for current_box in current_boxes:
+                for last_box in self._last_boxes:
+                    iou = self._calculate_iou(current_box["bbox"], last_box["bbox"])
+                    if iou >= 0.5:
+                        has_overlap = True
+                        break
+                if has_overlap:
+                    break
+        
+        if has_overlap:
+            self._consecutive_count += 1
+        else:
+            self._consecutive_count = 0
+        
+        # Update last boxes
+        self._last_boxes = current_boxes
+        
+        # Check if alert should fire
+        if self._consecutive_count >= self.alert_consec:
+            # Fire alert
+            alert_event = {
+                "ts": current_ts,
+                "type": "alert",
+                "backend": "cpu",
+                "image": {
+                    "width": detection_data.get("image", {}).get("width", 0),
+                    "height": detection_data.get("image", {}).get("height", 0)
+                },
+                "detections": alert_detections,
+                "criteria": {
+                    "consec": self.alert_consec,
+                    "iou_min": 0.5,
+                    "min_conf": self.alert_min_conf
+                }
+            }
+            
+            # Add image path and sha1 if available
+            if image_path and image_sha1:
+                alert_event["image"]["path"] = image_path
+                alert_event["image"]["sha1"] = image_sha1
+            
+            # Write alert event
+            try:
+                with open(self.detections_file, 'a', encoding='utf-8', buffering=1) as f:
+                    f.write(json.dumps(alert_event, ensure_ascii=False) + '\n')
+                    f.flush()
+                
+                self.logger.info(f"alert fired (consec={self._consecutive_count}, dets={len(alert_detections)})")
+                
+                # Reset counter to avoid spam
+                self._consecutive_count = 0
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"failed to write alert: {e}")
+        
+        return False
         
     def _write_detection(self, ok, error_msg=None, detection_data=None):
         """Write detection event to JSONL file"""
@@ -182,6 +350,18 @@ class DetectorDaemon:
                     if self.backend == 'cpu' and self.yolo_inference:
                         # CPU inference mode
                         detection_data = self.yolo_inference.infer_from_jpeg(jpeg_data)
+                        
+                        # Save snapshot if needed
+                        image_path, image_sha1 = self._save_snapshot(jpeg_data, detection_data)
+                        
+                        # Add image path and sha1 to detection data if saved
+                        if image_path and image_sha1 and "image" in detection_data:
+                            detection_data["image"]["path"] = image_path
+                            detection_data["image"]["sha1"] = image_sha1
+                        
+                        # Check for alert debounce
+                        self._check_alert_debounce(detection_data, image_path, image_sha1)
+                        
                         self._write_detection(True, detection_data=detection_data)
                         return True
                     else:

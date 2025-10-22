@@ -202,9 +202,9 @@ def create_app():
     def stream_overlay():
         """MJPEG stream with detection overlays"""
         try:
-            overlay_stream = OverlayStream()
+            overlay_stream = OverlayStream(logger)
             return Response(
-                stream_with_context(overlay_stream.generate()),
+                stream_with_context(overlay_stream.generate_frames()),
                 mimetype="multipart/x-mixed-replace; boundary=frame"
             )
         except Exception as e:
