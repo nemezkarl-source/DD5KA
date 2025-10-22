@@ -17,12 +17,12 @@ class PanelController {
 
     bindEvents() {
         // Detector control buttons
-        document.getElementById('detector-start').addEventListener('click', () => this.controlDetector('start'));
-        document.getElementById('detector-stop').addEventListener('click', () => this.controlDetector('stop'));
-        document.getElementById('detector-restart').addEventListener('click', () => this.controlDetector('restart'));
+        document.getElementById('btn-start').addEventListener('click', () => this.controlDetector('start'));
+        document.getElementById('btn-stop').addEventListener('click', () => this.controlDetector('stop'));
+        document.getElementById('btn-restart').addEventListener('click', () => this.controlDetector('restart'));
         
         // LED test button
-        document.getElementById('led-test').addEventListener('click', () => this.testLED());
+        document.getElementById('btn-led').addEventListener('click', () => this.testLED());
         
         // Window resize handler
         window.addEventListener('resize', () => this.debounceResize());
@@ -32,12 +32,13 @@ class PanelController {
         if (this.isRequestInProgress) return;
         
         this.isRequestInProgress = true;
-        const button = document.getElementById(`detector-${action}`);
+        const button = document.getElementById(`btn-${action}`);
         const originalText = button.textContent;
         
         try {
-            button.textContent = 'Выполняется...';
+            button.textContent = '...';
             button.disabled = true;
+            button.classList.add('btn-loading');
             
             const response = await this.fetchWithTimeout(`/api/detector/${action}`, {
                 method: 'POST',
@@ -47,16 +48,23 @@ class PanelController {
             const result = await response.json();
             
             if (result.ok) {
-                this.showToast(`Детектор ${action === 'start' ? 'запущен' : action === 'stop' ? 'остановлен' : 'перезапущен'}`, 'success');
-                this.updateStatus();
+                const actionText = action === 'start' ? 'STARTED' : action === 'stop' ? 'STOPPED' : 'RESTARTED';
+                this.showToast(`Detector ${actionText}`, 'success');
+                // Update status immediately after success
+                setTimeout(() => this.updateStatus(), 500);
             } else {
-                this.showToast(`Ошибка: ${result.error || 'Неизвестная ошибка'}`, 'error');
+                this.showToast(`Error: ${result.error || 'Unknown error'}`, 'error');
             }
         } catch (error) {
-            this.showToast(`Ошибка сети: ${error.message}`, 'error');
+            if (error.name === 'AbortError') {
+                this.showToast('Timeout: Request took too long', 'error');
+            } else {
+                this.showToast(`Network error: ${error.message}`, 'error');
+            }
         } finally {
             button.textContent = originalText;
             button.disabled = false;
+            button.classList.remove('btn-loading');
             this.isRequestInProgress = false;
         }
     }
@@ -65,12 +73,13 @@ class PanelController {
         if (this.isRequestInProgress) return;
         
         this.isRequestInProgress = true;
-        const button = document.getElementById('led-test');
+        const button = document.getElementById('btn-led');
         const originalText = button.textContent;
         
         try {
-            button.textContent = 'Тестируем...';
+            button.textContent = '...';
             button.disabled = true;
+            button.classList.add('btn-loading');
             
             const response = await this.fetchWithTimeout('/api/led/test', {
                 method: 'POST',
@@ -82,17 +91,24 @@ class PanelController {
             if (result.ok) {
                 this.ledTestSuccess = true;
                 this.ledTestTime = Date.now();
-                this.showToast('LED тест успешен', 'success');
+                this.showToast('LED OK', 'success');
+                // Update LED status immediately
+                setTimeout(() => this.updateStatus(), 500);
             } else {
                 this.ledTestSuccess = false;
-                this.showToast(`LED тест не удался: ${result.error || 'Неизвестная ошибка'}`, 'error');
+                this.showToast(`LED Error: ${result.error || 'Unknown error'}`, 'error');
             }
         } catch (error) {
             this.ledTestSuccess = false;
-            this.showToast(`Ошибка LED теста: ${error.message}`, 'error');
+            if (error.name === 'AbortError') {
+                this.showToast('LED Timeout', 'error');
+            } else {
+                this.showToast(`LED Error: ${error.message}`, 'error');
+            }
         } finally {
             button.textContent = originalText;
             button.disabled = false;
+            button.classList.remove('btn-loading');
             this.isRequestInProgress = false;
         }
     }
@@ -102,15 +118,16 @@ class PanelController {
             // Update detector status
             const detectorResponse = await this.fetchWithTimeout('/api/detector/status', {}, 5000);
             const detectorStatus = await detectorResponse.json();
-            this.updateStatusDot('detector-status', detectorStatus.status === 'active');
+            const isDetectorActive = detectorStatus.active_state === 'active';
+            this.updateStatusDot('detector-status', isDetectorActive);
 
             // Update health status (includes camera)
             const healthResponse = await this.fetchWithTimeout('/api/health', {}, 5000);
             const healthStatus = await healthResponse.json();
             this.updateStatusDot('camera-status', healthStatus.camera === 'ok');
 
-            // Update LED status
-            const ledOk = this.ledTestSuccess && (Date.now() - this.ledTestTime) < 5 * 60 * 1000; // 5 minutes
+            // Update LED status (5 minutes validity)
+            const ledOk = this.ledTestSuccess && (Date.now() - this.ledTestTime) < 5 * 60 * 1000;
             this.updateStatusDot('led-status', ledOk);
             this.updateStatusDot('setkomet-status', ledOk); // Same as LED status
 

@@ -289,70 +289,158 @@ def create_app():
     # Detector control endpoints
     @app.get("/api/detector/status")
     def detector_status():
-        """Get detector service status"""
+        """Get detector service status with detailed state"""
         try:
+            # Get detailed status using systemctl show
             result = subprocess.run(
-                ["systemctl", "is-active", "dd5ka-detector.service"],
+                ["systemctl", "show", "-p", "ActiveState", "-p", "SubState", "dd5ka-detector.service"],
                 capture_output=True,
                 text=True,
                 timeout=5
             )
-            status = result.stdout.strip()
-            return {"status": status}, 200
+            
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                active_state = "unknown"
+                sub_state = "unknown"
+                
+                for line in lines:
+                    if line.startswith("ActiveState="):
+                        active_state = line.split("=", 1)[1]
+                    elif line.startswith("SubState="):
+                        sub_state = line.split("=", 1)[1]
+                
+                return {
+                    "unit": "dd5ka-detector.service",
+                    "active_state": active_state,
+                    "sub_state": sub_state
+                }, 200
+            else:
+                # Fallback to is-active if show fails
+                result = subprocess.run(
+                    ["systemctl", "is-active", "dd5ka-detector.service"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                status = result.stdout.strip()
+                return {
+                    "unit": "dd5ka-detector.service", 
+                    "active_state": status,
+                    "sub_state": "unknown"
+                }, 200
+                
         except Exception as e:
             logger.error(f"detector status check failed: {e}")
-            return {"status": "unknown", "error": str(e)}, 500
+            return {"unit": "dd5ka-detector.service", "active_state": "unknown", "sub_state": "unknown", "error": str(e)}, 500
 
     @app.post("/api/detector/start")
     def detector_start():
-        """Start detector service"""
+        """Start detector service with sudo fallback"""
         try:
+            # Try without sudo first
             result = subprocess.run(
                 ["systemctl", "start", "dd5ka-detector.service"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=7
             )
+            
             if result.returncode == 0:
+                logger.info("detector start successful (no sudo)")
+                return {"ok": True}, 200
+            
+            # If failed, try with sudo
+            logger.info("detector start failed without sudo, trying with sudo")
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "start", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=7
+            )
+            
+            if result.returncode == 0:
+                logger.info("detector start successful (with sudo)")
                 return {"ok": True}, 200
             else:
-                return {"ok": False, "error": result.stderr}, 500
+                error_msg = result.stderr[:200] if result.stderr else "Unknown error"
+                logger.error(f"detector start failed: {error_msg}")
+                return {"ok": False, "error": error_msg}, 500
+                
         except Exception as e:
             logger.error(f"detector start failed: {e}")
             return {"ok": False, "error": str(e)}, 500
 
     @app.post("/api/detector/stop")
     def detector_stop():
-        """Stop detector service"""
+        """Stop detector service with sudo fallback"""
         try:
+            # Try without sudo first
             result = subprocess.run(
                 ["systemctl", "stop", "dd5ka-detector.service"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=7
             )
+            
             if result.returncode == 0:
+                logger.info("detector stop successful (no sudo)")
+                return {"ok": True}, 200
+            
+            # If failed, try with sudo
+            logger.info("detector stop failed without sudo, trying with sudo")
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "stop", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=7
+            )
+            
+            if result.returncode == 0:
+                logger.info("detector stop successful (with sudo)")
                 return {"ok": True}, 200
             else:
-                return {"ok": False, "error": result.stderr}, 500
+                error_msg = result.stderr[:200] if result.stderr else "Unknown error"
+                logger.error(f"detector stop failed: {error_msg}")
+                return {"ok": False, "error": error_msg}, 500
+                
         except Exception as e:
             logger.error(f"detector stop failed: {e}")
             return {"ok": False, "error": str(e)}, 500
 
     @app.post("/api/detector/restart")
     def detector_restart():
-        """Restart detector service"""
+        """Restart detector service with sudo fallback"""
         try:
+            # Try without sudo first
             result = subprocess.run(
                 ["systemctl", "restart", "dd5ka-detector.service"],
                 capture_output=True,
                 text=True,
-                timeout=10
+                timeout=7
             )
+            
             if result.returncode == 0:
+                logger.info("detector restart successful (no sudo)")
+                return {"ok": True}, 200
+            
+            # If failed, try with sudo
+            logger.info("detector restart failed without sudo, trying with sudo")
+            result = subprocess.run(
+                ["sudo", "-n", "systemctl", "restart", "dd5ka-detector.service"],
+                capture_output=True,
+                text=True,
+                timeout=7
+            )
+            
+            if result.returncode == 0:
+                logger.info("detector restart successful (with sudo)")
                 return {"ok": True}, 200
             else:
-                return {"ok": False, "error": result.stderr}, 500
+                error_msg = result.stderr[:200] if result.stderr else "Unknown error"
+                logger.error(f"detector restart failed: {error_msg}")
+                return {"ok": False, "error": error_msg}, 500
+                
         except Exception as e:
             logger.error(f"detector restart failed: {e}")
             return {"ok": False, "error": str(e)}, 500
@@ -360,29 +448,31 @@ def create_app():
     # LED test endpoint
     @app.post("/api/led/test")
     def led_test():
-        """Test LED on BCM GPIO17"""
+        """Test LED on BCM GPIO17 with 200ms flash"""
         try:
             # Try to import lgpio
             try:
                 import lgpio
             except ImportError:
+                logger.error("lgpio not available")
                 return {"ok": False, "error": "lgpio not available"}, 500
 
             # Open GPIO chip
             chip = lgpio.gpiochip_open(0)
             if chip < 0:
+                logger.error("Failed to open GPIO chip")
                 return {"ok": False, "error": "Failed to open GPIO chip"}, 500
 
             try:
                 # Set GPIO17 as output
                 lgpio.gpio_claim_output(chip, 17, 0)
                 
-                # Flash LED (150ms high, 150ms low)
+                # Flash LED (200ms high, then low)
                 lgpio.gpio_write(chip, 17, 1)
-                time.sleep(0.15)
+                time.sleep(0.2)
                 lgpio.gpio_write(chip, 17, 0)
-                time.sleep(0.15)
                 
+                logger.info("LED test successful")
                 return {"ok": True}, 200
                 
             finally:
