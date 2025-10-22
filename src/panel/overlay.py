@@ -127,9 +127,13 @@ class OverlayStream:
             self.logger.warning(f"Failed to read recent detections: {e}")
             return None
     
-    def _get_snapshot(self) -> Optional[bytes]:
+    def _get_snapshot(self, non_blocking: bool = False) -> Optional[bytes]:
         """Get snapshot JPEG data with rate limiting and error handling"""
         current_time = time.time()
+        
+        # If non_blocking, don't capture new frame, just return cached
+        if non_blocking:
+            return self.last_ok_frame
         
         # Check if we should capture a new frame
         if current_time - self.last_capture_time >= self.capture_interval:
@@ -233,12 +237,26 @@ class OverlayStream:
     
     def generate_frames(self):
         """Generate MJPEG frames with overlays"""
+        first = True
+        
         while True:
             try:
-                # Get snapshot
-                jpeg_data = self._get_snapshot()
-                if not jpeg_data:
-                    jpeg_data = self._create_no_frame()
+                # Get snapshot - instant first frame logic
+                if first:
+                    # First frame: use cached frame or create placeholder, no blocking
+                    jpeg_data = self.last_ok_frame
+                    if not jpeg_data:
+                        jpeg_data = self._create_no_frame()
+                else:
+                    # Subsequent frames: use non-blocking if not time for new capture
+                    current_time = time.time()
+                    if current_time - self.last_capture_time >= self.capture_interval:
+                        jpeg_data = self._get_snapshot()  # Blocking capture
+                    else:
+                        jpeg_data = self._get_snapshot(non_blocking=True)  # Non-blocking
+                    
+                    if not jpeg_data:
+                        jpeg_data = self._create_no_frame()
                 
                 # Get recent detection with age check
                 detection_event = self._get_recent_detection()
@@ -274,6 +292,7 @@ class OverlayStream:
                             evt_h = detection_event["image"].get("height", 0)
                             evt_wh = f"{evt_w}x{evt_h}"
                             frame_h, frame_w = image_np.shape[:2]
+                            # Scaling safety: protect against evt_w/evt_h == 0
                             if evt_w > 0 and evt_h > 0:
                                 scale_x = frame_w / evt_w
                                 scale_y = frame_h / evt_h
@@ -303,6 +322,7 @@ class OverlayStream:
                         evt_h = detection_event["image"].get("height", 0)
                         evt_wh = f"{evt_w}x{evt_h}"
                         frame_w, frame_h = image.size
+                        # Scaling safety: protect against evt_w/evt_h == 0
                         if evt_w > 0 and evt_h > 0:
                             scale_x = frame_w / evt_w
                             scale_y = frame_h / evt_h
@@ -322,10 +342,14 @@ class OverlayStream:
                 
                 draw_time = int((time.time() - start_draw) * 1000)
                 src_ts = detection_event.get("ts", "") if detection_event else ""
-                self.logger.info(f"overlay frame: dets={len(detections)}, age_ms={age_ms}, draw_ms={draw_time}, fresh={fresh}, src_ts={src_ts}, evt_wh={evt_wh}, frame_wh={frame_wh}")
+                self.logger.info(f"overlay frame: dets={len(detections)}, age_ms={age_ms}, draw_ms={draw_time}, fresh={fresh}, first={first}")
                 
-                # Yield MJPEG frame with proper headers
+                # Yield MJPEG frame with proper headers (boundary consistency)
                 yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
+                
+                # After first yield, set first=False
+                if first:
+                    first = False
                 
                 time.sleep(self.output_interval)
                 
