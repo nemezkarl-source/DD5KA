@@ -69,7 +69,7 @@ class OverlayStream:
         # Font cache
         self._font = None
         self._font_large = None
-        # Last frame stats for logging in generator
+        # Last frame stats for logging в генераторе
         self._last_dets_count = 0
         self._last_draw_ms = 0
         
@@ -341,7 +341,7 @@ class OverlayStream:
                     frame_data = self.make_frame_bytes()
                     last_frame_data = frame_data
                     last_send_time = current_time
-                    # Log first frame with real stats
+                    # Лог первого кадра с реальной статистикой
                     self.logger.info(
                         f"overlay frame sent: bytes={len(frame_data)}, dets={self._last_dets_count}, "
                         f"draw_ms={self._last_draw_ms}, fresh=True"
@@ -372,7 +372,7 @@ class OverlayStream:
                         # Reuse last frame if no fresh data
                         frame_data = last_frame_data or self._create_no_frame()
                     
-                    # Log frame with real stats
+                    # Лог последующих кадров с реальной статистикой
                     fresh = fresh_frame is not None
                     self.logger.info(
                         f"overlay frame sent: bytes={len(frame_data)}, dets={self._last_dets_count}, "
@@ -481,7 +481,7 @@ class OverlayStream:
             image.save(output, format='JPEG', quality=80)
             frame_data = output.getvalue()
         
-        # Save stats for logging
+        # Сохраняем статистику для логов
         self._last_dets_count = len(detections)
         self._last_draw_ms = int((time.time() - start_draw) * 1000)
         return frame_data
