@@ -32,14 +32,14 @@ CONF = float(os.getenv("DETECTOR_CONF_MIN", "0.25"))
 DET_PATH = os.getenv("DETECTIONS_PATH", "/home/nemez/DD5KA/logs/detections.jsonl")
 
 # Import ultralytics only if needed
+ULTRALYTICS_AVAILABLE = False
 if BACK == "cpu":
     try:
         from ultralytics import YOLO
         ULTRALYTICS_AVAILABLE = True
     except ImportError:
         ULTRALYTICS_AVAILABLE = False
-        print("ERROR: ultralytics not available for CPU backend")
-        sys.exit(1)
+        # логгер ещё не инициализирован; напечатаем в stderr и выйдем позже после инициализации логгера
 
 
 class DetectorDaemon:
@@ -79,7 +79,7 @@ class DetectorDaemon:
             try:
                 self.class_id_allow = set(int(id.strip()) for id in class_ids_str.split(','))
             except ValueError:
-                self.logger.warning(f"Invalid DETECTOR_CLASS_IDS: {class_ids_str}")
+                # логгер будет готов ниже; сохраним для сообщения после инициализации
                 self.class_id_allow = None
         
         # Ensure log directory exists
@@ -99,9 +99,23 @@ class DetectorDaemon:
         # Detection log file - use DET_PATH
         self.detections_file = DET_PATH
         
+        # Стартовая диагностика окружения
+        self.logger.info(f"detector start: backend={self.backend}, model='{MODEL}', detections_file='{self.detections_file}'")
+        if self.backend == 'cpu':
+            self.logger.info(f"ultralytics available={ULTRALYTICS_AVAILABLE}")
+            if not MODEL:
+                self.logger.error("DETECTOR_MODEL is empty; set path to .pt file")
+                sys.exit(1)
+            if not os.path.exists(MODEL):
+                self.logger.error(f"model file not found: {MODEL}")
+                sys.exit(1)
+
         # Initialize model for CPU backend
         self.model = None
         if self.backend == 'cpu':
+            if not ULTRALYTICS_AVAILABLE:
+                self.logger.error("ultralytics not available for CPU backend")
+                sys.exit(1)
             try:
                 self.logger.info(f"loading model from {MODEL}")
                 self.model = YOLO(MODEL)
@@ -118,6 +132,13 @@ class DetectorDaemon:
         
         # Log configuration
         self.logger.info(f"detector conf_min={self.conf_min}")
+        
+        # Log any class ID validation errors that occurred before logger was ready
+        if class_ids_str:
+            try:
+                set(int(id.strip()) for id in class_ids_str.split(','))
+            except ValueError:
+                self.logger.warning(f"Invalid DETECTOR_CLASS_IDS: {class_ids_str}")
         
         self.running = True
         
@@ -381,7 +402,7 @@ class DetectorDaemon:
                             dets = []
                             boxes = r.boxes
                             if boxes is not None:
-                                for i in range(int(boxes.shape[0])):
+                                for i in range(len(boxes)):
                                     xyxy = boxes.xyxy[i].tolist()
                                     conf = float(boxes.conf[i])
                                     # Normalize class name to "drone"
