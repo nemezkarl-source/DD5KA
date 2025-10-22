@@ -15,7 +15,7 @@ if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
 from panel.overlay import OverlayStream
-from panel.camera import capture_jpeg, is_camera_busy
+from panel.camera import capture_jpeg
 
 def create_app():
     app = Flask(__name__)
@@ -137,12 +137,7 @@ def create_app():
     def snapshot():
         try:
             max_side = int(os.getenv("SNAPSHOT_MAX_SIDE", "960"))
-            
-            # Check if camera is busy and handle queue
-            if is_camera_busy():
-                logger.warning("snapshot deferred: busy")
-                return jsonify({"error": "camera busy"}), 503
-            
+            # Не проверяем занятость камеры заранее: capture_jpeg() сам сериализует доступ
             jpeg_data = capture_jpeg(max_side=max_side)
             return Response(jpeg_data, mimetype="image/jpeg"), 200
         except Exception as e:
