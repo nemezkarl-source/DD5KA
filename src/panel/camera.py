@@ -16,6 +16,101 @@ from typing import Optional
 # Global lock for camera access serialization
 SNAPSHOT_LOCK = threading.Lock()
 
+class MJPEGGrabber:
+    """
+    Continuous MJPEG grabber using rpicam-vid --codec mjpeg -t 0 -o -
+    Parses concatenated JPEG frames (SOI 0xFFD8 ... EOI 0xFFD9) from stdout.
+    Thread-safe: last_frame is updated atomically.
+    """
+    def __init__(self, width: int, height: int, fps: int = 8, extra_args: Optional[list] = None):
+        self.logger = logging.getLogger("panel.camera.mjpeg")
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.extra_args = extra_args or []
+        self.proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._buf = bytearray()
+        self._lock = threading.Lock()
+        self._last_frame: Optional[bytes] = None
+
+    def start(self):
+        if self.proc is not None:
+            return
+        cmd = [
+            "/usr/bin/rpicam-vid",
+            "-n",
+            "-t", "0",
+            "--codec", "mjpeg",
+            "--width", str(self.width),
+            "--height", str(self.height),
+            "--framerate", str(self.fps),
+            "-o", "-"
+        ] + self.extra_args
+        self.logger.info(f"starting MJPEG grabber: {' '.join(cmd)}")
+        self.proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0
+        )
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._reader_loop, name="mjpeg_reader", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self.proc:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=1.5)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+        self.proc = None
+        self._thread = None
+
+    def _reader_loop(self):
+        SOI = b"\xff\xd8"
+        EOI = b"\xff\xd9"
+        stdout = self.proc.stdout if self.proc else None
+        last_log = 0.0
+        while not self._stop.is_set() and stdout and not stdout.closed:
+            chunk = stdout.read(4096)
+            if not chunk:
+                time.sleep(0.005)
+                continue
+            self._buf.extend(chunk)
+            # Extract complete JPEGs from buffer
+            while True:
+                start = self._buf.find(SOI)
+                if start == -1:
+                    # no SOI yet, keep buffer from last 1KB to avoid unbounded growth
+                    if len(self._buf) > 4096:
+                        self._buf = self._buf[-4096:]
+                    break
+                end = self._buf.find(EOI, start + 2)
+                if end == -1:
+                    # wait for more data
+                    # keep tail starting at SOI
+                    if start > 0:
+                        self._buf = self._buf[start:]
+                    break
+                # include EOI marker
+                frame = bytes(self._buf[start:end+2])
+                # cut consumed data
+                self._buf = self._buf[end+2:]
+                with self._lock:
+                    self._last_frame = frame
+                now = time.time()
+                if now - last_log > 5.0:
+                    self.logger.info(f"mjpeg frame ok: {len(frame)} bytes")
+                    last_log = now
+
+    def get_last_frame(self) -> Optional[bytes]:
+        with self._lock:
+            return self._last_frame
+
 
 def capture_jpeg(max_side: int = 1280, timeout_ms: int = 120, retries: int = 2) -> bytes:
     """

@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional, Dict, List, Tuple
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from .camera import capture_jpeg
+from .camera import capture_jpeg, MJPEGGrabber
 
 # Try to import OpenCV, fallback to PIL
 try:
@@ -38,6 +38,7 @@ class OverlayStream:
         # По умолчанию делаем поток визуально плавнее; значения можно переопределить через ENV
         self.output_fps = int(os.getenv('OVERLAY_FPS', '10'))
         self.capture_fps = int(os.getenv('OVERLAY_CAPTURE_FPS', '5'))
+        self.continuous = os.getenv('OVERLAY_CONTINUOUS', '1') == '1'
         
         # YOLO fallback environment variables
         self.yolo_fallback = os.getenv('OVERLAY_YOLO_FALLBACK', '0') == '1'
@@ -76,9 +77,29 @@ class OverlayStream:
         self._last_dets_count = 0
         self._last_draw_ms = 0
 
-        # Запускаем фоновый поток захвата кадров с ограничением частоты (capture_fps)
-        self._capture_thread = threading.Thread(target=self._capture_loop, name="overlay_capture", daemon=True)
-        self._capture_thread.start()
+        # Источник кадров: либо непрерывный MJPEG из rpicam-vid, либо периодический rpicam-still
+        self._grabber: Optional[MJPEGGrabber] = None
+        self._capture_thread: Optional[threading.Thread] = None
+        if self.continuous:
+            # Подбираем размеры как сейчас в snapshot-пути (масштаб по max_side)
+            src_w, src_h = 4056, 3040
+            if max(src_w, src_h) > self.max_side:
+                k = self.max_side / max(src_w, src_h)
+                w = int(src_w * k) // 2 * 2
+                h = int(src_h * k) // 2 * 2
+            else:
+                w, h = src_w, src_h
+            self._grabber = MJPEGGrabber(width=w, height=h, fps=max(1, min(30, self.capture_fps)))
+            try:
+                self._grabber.start()
+                self.logger.info(f"continuous capture started {w}x{h}@{self.capture_fps} (OVERLAY_CONTINUOUS=1)")
+            except Exception as e:
+                self.logger.warning(f"failed to start continuous capture, fallback to still: {e}")
+                self.continuous = False
+        if not self.continuous:
+            # Запускаем фоновый поток периодического захвата rpicam-still
+            self._capture_thread = threading.Thread(target=self._capture_loop, name="overlay_capture", daemon=True)
+            self._capture_thread.start()
         
     def _get_font(self, size: int = 16):
         """Get cached font"""
@@ -422,8 +443,11 @@ class OverlayStream:
         """Generate a single JPEG frame with overlays"""
         start_draw = time.time()
         
-        # Берём последний готовый кадр из кэша (без блокировки)
-        jpeg_data = self._get_snapshot(non_blocking=True)
+        # Берём последний готовый кадр (не блокируем); при continuous — из MJPEG-граббера
+        if self.continuous and self._grabber:
+            jpeg_data = self._grabber.get_last_frame()
+        else:
+            jpeg_data = self._get_snapshot(non_blocking=True)
         if not jpeg_data:
             jpeg_data = self._create_no_frame()
         
@@ -617,3 +641,8 @@ class OverlayStream:
         if self._det_fp:
             self._det_fp.close()
         self._stop = True
+        if self._grabber:
+            try:
+                self._grabber.stop()
+            except Exception:
+                pass
