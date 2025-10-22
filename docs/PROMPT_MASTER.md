@@ -91,6 +91,24 @@
 - `dd5ka-detector.service` — WorkingDirectory=`/home/nemez/project_root`, запускает `/home/nemez/project_root/src/detector/daemon.py`, лог: `/home/nemez/project_root/logs/detector.log`
 - `dd5ka-panel.service` — запускает `/home/nemez/project_root/src/panel/app.py`, лог: `/home/nemez/project_root/logs/panel.log`
 
+### 3.3 Golden Snapshot (22.10.2025)
+
+Глобальная контрольная точка валидации системы (панель + детектор + systemd + env):
+/home/nemez/DD5KA/DD5KA_state_20251022_194432.tgz
+
+```yaml
+Назначение:
+- эталонная рабочая сборка
+- fallback для быстрого восстановления
+
+Базовое восстановление:
+tar -xzf DD5KA_state_20251022_194432.tgz -C /
+
+Порядок фиксации новых снапшотов:
+- каждый новый снапшот фиксируется тем же форматом
+- предыдущие не удаляются (история снапшотов != история кода, это состояние системы)
+```
+
 ---
 
 ## 4. Программная архитектура
