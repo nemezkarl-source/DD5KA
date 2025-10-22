@@ -16,6 +16,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime
 from os.path import abspath, join, dirname
+from io import BytesIO
+from PIL import Image
 
 # Add src directory to sys.path for systemd execution
 # (systemd runs daemon.py as script, not as module)
@@ -23,7 +25,21 @@ SRC_DIR = abspath(join(dirname(__file__), ".."))
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
 
-from detector.yolo_cpu import YOLOCPUInference
+# Environment variables
+MODEL = os.getenv("DETECTOR_MODEL", "").strip()
+BACK = os.getenv("DETECTOR_BACKEND", "stub").strip().lower()
+CONF = float(os.getenv("DETECTOR_CONF_MIN", "0.25"))
+DET_PATH = os.getenv("DETECTIONS_PATH", "/home/nemez/DD5KA/logs/detections.jsonl")
+
+# Import ultralytics only if needed
+if BACK == "cpu":
+    try:
+        from ultralytics import YOLO
+        ULTRALYTICS_AVAILABLE = True
+    except ImportError:
+        ULTRALYTICS_AVAILABLE = False
+        print("ERROR: ultralytics not available for CPU backend")
+        sys.exit(1)
 
 
 class DetectorDaemon:
@@ -32,7 +48,7 @@ class DetectorDaemon:
         self.panel_base_url = os.getenv('PANEL_BASE_URL', 'http://127.0.0.1:8098')
         self.poll_sec = max(1, min(60, int(os.getenv('DETECTOR_POLL_SEC', '5'))))
         self.log_dir = os.getenv('LOG_DIR', 'logs')
-        self.backend = os.getenv('DD5KA_BACKEND', 'stub')
+        self.backend = BACK  # Use the global BACK variable
         
         # Retry configuration
         self.retry_base_ms = int(os.getenv('DETECTOR_RETRY_BASE_MS', '240'))
@@ -40,7 +56,7 @@ class DetectorDaemon:
         self.fail_extra_ms = int(os.getenv('DETECTOR_FAIL_EXTRA_MS', '180'))
         
         # CPU inference parameters
-        self.conf_min = float(os.getenv('DETECTOR_CONF_MIN', '0.10'))
+        self.conf_min = CONF  # Use the global CONF variable
         self.allow_classes = os.getenv('DETECTOR_CLASS_ALLOW', 'drone,dron,дрон,uav')
         self.max_side = int(os.getenv('IMG_MAX_SIDE', '1280'))
         
@@ -80,20 +96,21 @@ class DetectorDaemon:
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
         
-        # Detection log file
-        self.detections_file = f"{self.log_dir}/detections.jsonl"
+        # Detection log file - use DET_PATH
+        self.detections_file = DET_PATH
         
-        # Initialize YOLO inference if CPU backend
-        self.yolo_inference = None
+        # Initialize model for CPU backend
+        self.model = None
         if self.backend == 'cpu':
-            model_path = "/home/nemez/DD5KA/models/cpu/best.pt"
-            self.yolo_inference = YOLOCPUInference(
-                model_path, self.logger, 
-                min_conf=self.conf_min,
-                allow_classes=self.allow_classes,
-                max_side=self.max_side,
-                class_id_allow=self.class_id_allow
-            )
+            try:
+                self.logger.info(f"loading model from {MODEL}")
+                self.model = YOLO(MODEL)
+                # Sanity ping of class names
+                names = getattr(getattr(self.model, "model", self.model), "names", {}) or {0: "drone"}
+                self.logger.info("model loaded successfully")
+            except Exception as e:
+                self.logger.error(f"failed to load model: {e}")
+                sys.exit(1)  # No fallback to stub
         
         # Signal handling
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -273,7 +290,7 @@ class DetectorDaemon:
                 "type": "detection",
                 "backend": "cpu",
                 "model": {
-                    "path": "/home/nemez/DD5KA/models/cpu/best.pt",
+                    "path": MODEL,
                     "framework": "ultralytics",
                     "version": "auto"
                 },
@@ -283,7 +300,7 @@ class DetectorDaemon:
             if "error" in detection_data:
                 event["error"] = detection_data["error"]
         else:
-            # Heartbeat event (stub mode or fallback)
+            # Heartbeat event (stub mode only)
             event = {
                 "ts": datetime.utcnow().isoformat() + "Z",
                 "type": "heartbeat",
@@ -305,10 +322,11 @@ class DetectorDaemon:
             # Transient errors - log as INFO
             if code == 503:
                 error_msg = "transient: HTTP 503 busy"
+                self.logger.info("transient: HTTP 503 busy, retrying")
             else:
                 error_msg = "transient: HTTP 500"
+                self.logger.info(f"transient: HTTP {code} (busy/fail), retrying once")
             
-            self.logger.info(f"transient: HTTP {code} (busy/fail), retrying once")
             self._write_detection(False, error_msg)
             return False
         else:
@@ -350,23 +368,70 @@ class DetectorDaemon:
                 if response.status == 200:
                     jpeg_data = response.read()
                     
-                    if self.backend == 'cpu' and self.yolo_inference:
-                        # CPU inference mode
-                        detection_data = self.yolo_inference.infer_from_jpeg(jpeg_data)
-                        
-                        # Save snapshot if needed
-                        image_path, image_sha1 = self._save_snapshot(jpeg_data, detection_data)
-                        
-                        # Add image path and sha1 to detection data if saved
-                        if image_path and image_sha1 and "image" in detection_data:
-                            detection_data["image"]["path"] = image_path
-                            detection_data["image"]["sha1"] = image_sha1
-                        
-                        # Check for alert debounce
-                        self._check_alert_debounce(detection_data, image_path, image_sha1)
-                        
-                        self._write_detection(True, detection_data=detection_data)
-                        return True
+                    if self.backend == 'cpu' and self.model:
+                        # CPU inference mode with direct ultralytics
+                        try:
+                            # Open image with PIL
+                            img = Image.open(BytesIO(jpeg_data)).convert("RGB")
+                            
+                            # Run inference
+                            r = self.model.predict(img, conf=CONF, iou=0.50, imgsz=640, device="cpu", verbose=False)[0]
+                            
+                            # Process detections
+                            dets = []
+                            boxes = r.boxes
+                            if boxes is not None:
+                                for i in range(int(boxes.shape[0])):
+                                    xyxy = boxes.xyxy[i].tolist()
+                                    conf = float(boxes.conf[i])
+                                    # Normalize class name to "drone"
+                                    dets.append({
+                                        "class_id": 0,
+                                        "class_name": "drone",
+                                        "conf": round(conf, 3),
+                                        "bbox_xyxy": [float(x) for x in xyxy]
+                                    })
+                            
+                            # Create detection event
+                            event = {
+                                "ts": datetime.utcnow().isoformat(timespec="microseconds") + "Z",
+                                "type": "detection",
+                                "backend": "cpu",
+                                "model": {
+                                    "path": MODEL,
+                                    "framework": "ultralytics",
+                                    "version": "auto"
+                                },
+                                "image": {
+                                    "width": img.width,
+                                    "height": img.height
+                                },
+                                "detections": dets
+                            }
+                            
+                            # Write to DETECTIONS_PATH with fsync
+                            try:
+                                with open(DET_PATH, 'a', encoding='utf-8', buffering=1) as f:
+                                    f.write(json.dumps(event, ensure_ascii=False) + '\n')
+                                    f.flush()
+                                    os.fsync(f.fileno())
+                                
+                                self.logger.info(f"infer dets={len(dets)}, conf>={CONF}")
+                                
+                                # Save snapshot if needed (existing logic)
+                                image_path, image_sha1 = self._save_snapshot(jpeg_data, event)
+                                
+                                # Check for alert debounce (existing logic)
+                                self._check_alert_debounce(event, image_path, image_sha1)
+                                
+                            except Exception as e:
+                                self.logger.error(f"failed to write detection: {e}")
+                            
+                            return True
+                            
+                        except Exception as e:
+                            self.logger.error(f"inference failed: {e}")
+                            return False
                     else:
                         # Stub mode
                         self.logger.info("detector heartbeat (snapshot ok)")
@@ -400,7 +465,7 @@ class DetectorDaemon:
     
     def run(self):
         """Main daemon loop"""
-        self.logger.info(f"detector daemon starting (poll_sec={self.poll_sec}, panel={self.panel_base_url}, backend={self.backend})")
+        self.logger.info(f"detector daemon starting (poll_sec={self.poll_sec}, panel={self.panel_base_url}, backend={BACK})")
         
         while self.running:
             try:

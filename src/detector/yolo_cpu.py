@@ -113,13 +113,14 @@ class YOLOCPUInference:
             
             # Run inference
             start_time = time.time()
-            results = self.model(image_np)
+            results = self.model.predict(image_np, conf=self.min_conf, iou=0.50, imgsz=640, device="cpu", verbose=False)
             infer_time = int((time.time() - start_time) * 1000)
             
             # Parse and filter results
             detections = []
             if results and len(results) > 0:
-                boxes = results[0].boxes
+                result = results[0]
+                boxes = result.boxes
                 if boxes is not None:
                     # Calculate scale factors for bbox conversion
                     scale_x = orig_w / resized_dims[0]
