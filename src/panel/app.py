@@ -219,6 +219,12 @@ def create_app():
             mimetype="multipart/x-mixed-replace; boundary=frame"
         )
 
+    @app.route("/overlay.jpg")
+    def overlay_jpeg():
+        stream = OverlayStream(logger=app.logger)
+        data = stream.render_single_frame()
+        return Response(data, mimetype="image/jpeg")
+
     return app
 
 if __name__ == "__main__":
