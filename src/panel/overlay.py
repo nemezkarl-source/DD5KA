@@ -69,6 +69,9 @@ class OverlayStream:
         # Font cache
         self._font = None
         self._font_large = None
+        # Last frame stats for logging in generator
+        self._last_dets_count = 0
+        self._last_draw_ms = 0
         
     def _get_font(self, size: int = 16):
         """Get cached font"""
@@ -338,9 +341,11 @@ class OverlayStream:
                     frame_data = self.make_frame_bytes()
                     last_frame_data = frame_data
                     last_send_time = current_time
-                    
-                    # Log first frame
-                    self.logger.info(f"overlay frame sent: bytes={len(frame_data)}, dets=0, draw_ms=0, fresh=True")
+                    # Log first frame with real stats
+                    self.logger.info(
+                        f"overlay frame sent: bytes={len(frame_data)}, dets={self._last_dets_count}, "
+                        f"draw_ms={self._last_draw_ms}, fresh=True"
+                    )
                     
                     # Yield first frame
                     yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
@@ -367,11 +372,12 @@ class OverlayStream:
                         # Reuse last frame if no fresh data
                         frame_data = last_frame_data or self._create_no_frame()
                     
-                    # Log frame
-                    detections_count = 0  # Simplified for now
-                    draw_time = 0  # Simplified for now
+                    # Log frame with real stats
                     fresh = fresh_frame is not None
-                    self.logger.info(f"overlay frame sent: bytes={len(frame_data)}, dets={detections_count}, draw_ms={draw_time}, fresh={fresh}")
+                    self.logger.info(
+                        f"overlay frame sent: bytes={len(frame_data)}, dets={self._last_dets_count}, "
+                        f"draw_ms={self._last_draw_ms}, fresh={fresh}"
+                    )
                     
                     # Yield frame
                     yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
@@ -475,6 +481,9 @@ class OverlayStream:
             image.save(output, format='JPEG', quality=80)
             frame_data = output.getvalue()
         
+        # Save stats for logging
+        self._last_dets_count = len(detections)
+        self._last_draw_ms = int((time.time() - start_draw) * 1000)
         return frame_data
     
     def generate_single_frame(self) -> bytes:
