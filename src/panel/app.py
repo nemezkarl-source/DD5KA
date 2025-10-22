@@ -6,7 +6,7 @@ import sys
 import time
 from functools import partial
 from os.path import abspath, join, dirname
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context, make_response
 
 # Add src directory to sys.path for systemd execution
 # (systemd runs app.py as script, not as module)
@@ -211,22 +211,39 @@ def create_app():
             logger.error(f"overlay stream failed: {e}")
             return jsonify({"error": "overlay stream failed"}), 500
 
-    @app.get("/overlay.mjpg")
-    def overlay_mjpg():
+    @app.route("/overlay.mjpg")
+    def overlay_mjpeg():
         stream = OverlayStream(logger=app.logger)
-        return Response(
-            stream.generate_frames(),
-            mimetype="multipart/x-mixed-replace; boundary=frame"
-        )
+        gen = stream.generate_frames()  # новый генератор на каждый запрос
+        resp = Response(stream_with_context(gen),
+                        mimetype="multipart/x-mixed-replace; boundary=frame")
+        # no-cache — важно для некоторых клиентов/VLC
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+
+    @app.route("/stream/overlay.mjpg")
+    def overlay_mjpeg_compat():
+        return overlay_mjpeg()
 
     @app.route("/overlay.jpg")
-    def overlay_jpeg():
+    def overlay_single():
         stream = OverlayStream(logger=app.logger)
-        data = stream.render_single_frame()
-        return Response(data, mimetype="image/jpeg")
+        frame = stream.render_single_frame()
+        resp = make_response(frame)
+        resp.headers["Content-Type"] = "image/jpeg"
+        resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        resp.headers["Pragma"] = "no-cache"
+        resp.headers["Expires"] = "0"
+        return resp
+
+    @app.route("/stream/overlay.jpg")
+    def overlay_single_compat():
+        return overlay_single()
 
     return app
 
 if __name__ == "__main__":
     app = create_app()
-    app.run(host="0.0.0.0", port=8098, debug=False)
+    app.run(host="0.0.0.0", port=8098, threaded=True, use_reloader=False)
