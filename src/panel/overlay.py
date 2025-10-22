@@ -241,22 +241,24 @@ class OverlayStream:
         
         while True:
             try:
-                # Get snapshot - instant first frame logic
+                # Fast track for first frame - no blocking operations
                 if first:
-                    # First frame: use cached frame or create placeholder, no blocking
-                    jpeg_data = self.last_ok_frame
-                    if not jpeg_data:
-                        jpeg_data = self._create_no_frame()
+                    frame_data = self.last_ok_frame or self._create_no_frame()
+                    yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(frame_data)).encode() + b"\r\n\r\n" + frame_data + b"\r\n"
+                    self.logger.info("overlay first frame sent (instant)")
+                    first = False
+                    time.sleep(self.output_interval)
+                    continue
+                
+                # Get snapshot - subsequent frames
+                current_time = time.time()
+                if current_time - self.last_capture_time >= self.capture_interval:
+                    jpeg_data = self._get_snapshot()  # Blocking capture
                 else:
-                    # Subsequent frames: use non-blocking if not time for new capture
-                    current_time = time.time()
-                    if current_time - self.last_capture_time >= self.capture_interval:
-                        jpeg_data = self._get_snapshot()  # Blocking capture
-                    else:
-                        jpeg_data = self._get_snapshot(non_blocking=True)  # Non-blocking
-                    
-                    if not jpeg_data:
-                        jpeg_data = self._create_no_frame()
+                    jpeg_data = self._get_snapshot(non_blocking=True)  # Non-blocking
+                
+                if not jpeg_data:
+                    jpeg_data = self._create_no_frame()
                 
                 # Get recent detection with age check
                 detection_event = self._get_recent_detection()
@@ -288,14 +290,12 @@ class OverlayStream:
                         scale_x = scale_y = 1.0
                         evt_wh = "0x0"
                         if detection_event and "image" in detection_event:
-                            evt_w = detection_event["image"].get("width", 0)
-                            evt_h = detection_event["image"].get("height", 0)
+                            evt_w = max(1, int(detection_event["image"].get("width", 0)))
+                            evt_h = max(1, int(detection_event["image"].get("height", 0)))
                             evt_wh = f"{evt_w}x{evt_h}"
                             frame_h, frame_w = image_np.shape[:2]
-                            # Scaling safety: protect against evt_w/evt_h == 0
-                            if evt_w > 0 and evt_h > 0:
-                                scale_x = frame_w / evt_w
-                                scale_y = frame_h / evt_h
+                            scale_x = frame_w / evt_w
+                            scale_y = frame_h / evt_h
                         
                         # Draw overlays
                         if detections:
@@ -318,14 +318,12 @@ class OverlayStream:
                     scale_x = scale_y = 1.0
                     evt_wh = "0x0"
                     if detection_event and "image" in detection_event:
-                        evt_w = detection_event["image"].get("width", 0)
-                        evt_h = detection_event["image"].get("height", 0)
+                        evt_w = max(1, int(detection_event["image"].get("width", 0)))
+                        evt_h = max(1, int(detection_event["image"].get("height", 0)))
                         evt_wh = f"{evt_w}x{evt_h}"
                         frame_w, frame_h = image.size
-                        # Scaling safety: protect against evt_w/evt_h == 0
-                        if evt_w > 0 and evt_h > 0:
-                            scale_x = frame_w / evt_w
-                            scale_y = frame_h / evt_h
+                        scale_x = frame_w / evt_w
+                        scale_y = frame_h / evt_h
                     
                     # Draw overlays
                     if detections:
@@ -341,15 +339,10 @@ class OverlayStream:
                     frame_wh = f"{frame_w}x{frame_h}"
                 
                 draw_time = int((time.time() - start_draw) * 1000)
-                src_ts = detection_event.get("ts", "") if detection_event else ""
-                self.logger.info(f"overlay frame: dets={len(detections)}, age_ms={age_ms}, draw_ms={draw_time}, fresh={fresh}, first={first}")
+                self.logger.info(f"overlay frame: dets={len(detections)}, age_ms={age_ms}, draw_ms={draw_time}, fresh={fresh}, first={False}")
                 
-                # Yield MJPEG frame with proper headers (boundary consistency)
+                # Yield MJPEG frame with proper headers
                 yield f"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: {len(frame_data)}\r\n\r\n".encode() + frame_data + b"\r\n"
-                
-                # After first yield, set first=False
-                if first:
-                    first = False
                 
                 time.sleep(self.output_interval)
                 
