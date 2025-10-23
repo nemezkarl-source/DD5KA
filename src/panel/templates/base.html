@@ -153,6 +153,13 @@
             opacity: 0;
             transform: translateX(100%);
         }
+
+        /* ——— TOPBAR ——— */
+        .topbar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
     </style>
 </head>
 <body>
@@ -170,6 +177,9 @@
         </nav>
         {% block content %}{% endblock %}
     </div>
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=3"></script>
 </body>
 </html>
+
+<!-- CHANGELOG -->
+<!-- Добавлен cache-buster ?v=3 для JS и стили для topbar -->
