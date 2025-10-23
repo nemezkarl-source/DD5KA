@@ -81,10 +81,60 @@
         }
         #overlay-fallback.hidden { opacity: 0; pointer-events: none; }
         .fallback-image { max-width: 100%; max-height: 100%; object-fit: contain; }
+
+        /* ——— NAVIGATION ——— */
+        .main-nav {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .nav-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .nav-title {
+            font-weight: 700;
+            letter-spacing: 1px;
+            color: #333;
+        }
+
+        .nav-right {
+            display: flex;
+            gap: 20px;
+        }
+
+        .nav-link {
+            color: #666;
+            text-decoration: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            transition: background-color 0.2s ease;
+        }
+
+        .nav-link:hover {
+            background-color: #e9ecef;
+            color: #333;
+        }
     </style>
 </head>
 <body>
     <div class="app-container">
+        <nav class="main-nav">
+            <div class="nav-left">
+                <img src="/static/img/1.png" alt="DD5KA Logo" class="logo-image">
+                <span class="nav-title">DD::5::KA</span>
+            </div>
+            <div class="nav-right">
+                <a href="/" class="nav-link">Главная</a>
+                <a href="/photos" class="nav-link">Фото детекций</a>
+            </div>
+        </nav>
         {% block content %}{% endblock %}
     </div>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>

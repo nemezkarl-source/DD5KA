@@ -5,10 +5,12 @@ import subprocess
 import sys
 import time
 import threading
+import requests
 from datetime import datetime
 from functools import partial
 from os.path import abspath, join, dirname
-from flask import Flask, Response, jsonify, request, send_file, stream_with_context, make_response, render_template
+from flask import Flask, Response, jsonify, request, send_file, stream_with_context, make_response, render_template, send_from_directory
+from PIL import Image
 
 # Add src directory to sys.path for systemd execution
 # (systemd runs app.py as script, not as module)
@@ -26,6 +28,11 @@ LED_ACTIVE_HIGH = True  # 1=ON, 0=OFF
 DETECTIONS_FILE = "/home/nemez/project_root/logs/detections.jsonl"
 LED_LAST_OK_FILE = "/home/nemez/project_root/logs/last_led_ok.txt"
 LED_CLASSES = [cls.strip().lower() for cls in (os.getenv("LED_DETECTION_CLASSES") or "drone").split(",")]
+
+# Gallery Configuration
+GALLERY_DIR = "/home/nemez/project_root/logs/gallery"
+THUMBS_DIR = f"{GALLERY_DIR}/thumbs"
+GALLERY_MAX_ITEMS = 1000
 
 class LedBlinker:
     """Thread-safe LED blinking with GPIO control"""
@@ -129,9 +136,151 @@ class DetectionTailThread:
             try:
                 self._check_detections()
                 time.sleep(0.25)  # Check every 250ms
+        except Exception as e:
+            self.logger.error(f"Detection monitoring error: {e}")
+            time.sleep(1)
+
+class GalleryCollector:
+    """Background thread that monitors detections.jsonl and collects gallery images"""
+    
+    def __init__(self, logger):
+        self.logger = logger
+        self.running = False
+        self.thread = None
+        self.last_inode = None
+        
+    def start(self):
+        """Start the gallery collector thread"""
+        if self.running:
+            return
+            
+        self.running = True
+        self.thread = threading.Thread(target=self._collect_loop, daemon=True)
+        self.thread.start()
+        self.logger.info("Gallery collector started")
+        
+    def stop(self):
+        """Stop the gallery collector thread"""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=5)
+        self.logger.info("Gallery collector stopped")
+        
+    def _collect_loop(self):
+        """Main collection loop"""
+        while self.running:
+            try:
+                self._tail_detections()
+                time.sleep(1)  # Check every second
             except Exception as e:
-                self.logger.error(f"Detection monitoring error: {e}")
-                time.sleep(1)
+                self.logger.error(f"Gallery collector error: {e}")
+                time.sleep(5)  # Wait longer on error
+                
+    def _tail_detections(self):
+        """Tail detections.jsonl file and process new lines"""
+        try:
+            if not os.path.exists(DETECTIONS_FILE):
+                return
+                
+            # Check if file was rotated/truncated
+            current_inode = os.stat(DETECTIONS_FILE).st_ino
+            if self.last_inode is not None and current_inode != self.last_inode:
+                self.logger.info("Detections file rotated, reconnecting")
+                self.last_inode = current_inode
+                return
+                
+            self.last_inode = current_inode
+            
+            # Read new lines from EOF
+            with open(DETECTIONS_FILE, 'r') as f:
+                f.seek(0, 2)  # Seek to EOF
+                while self.running:
+                    line = f.readline()
+                    if not line:
+                        break
+                    self._process_detection(line.strip())
+                    
+        except Exception as e:
+            self.logger.error(f"Tail detections failed: {e}")
+            
+    def _process_detection(self, line):
+        """Process a single detection line"""
+        try:
+            if not line:
+                return
+                
+            data = json.loads(line)
+            if not data.get('detections'):
+                return
+                
+            # Download overlay image
+            timestamp = datetime.now()
+            filename = timestamp.strftime("%Y%m%d_%H%M%S%f")[:-3] + ".jpg"  # milliseconds
+            filepath = os.path.join(GALLERY_DIR, filename)
+            
+            # Download from overlay endpoint
+            response = requests.get("http://127.0.0.1:8098/overlay.jpg", timeout=5)
+            if response.status_code == 200:
+                with open(filepath, 'wb') as f:
+                    f.write(response.content)
+                    
+                # Create thumbnail
+                self._create_thumbnail(filepath, filename)
+                
+                # Cleanup old files
+                self._cleanup_old_files()
+                
+                self.logger.info(f"Saved gallery image: {filename}")
+            else:
+                self.logger.warning(f"Failed to download overlay: {response.status_code}")
+                
+        except Exception as e:
+            self.logger.error(f"Process detection failed: {e}")
+            
+    def _create_thumbnail(self, image_path, filename):
+        """Create thumbnail for gallery image"""
+        try:
+            thumb_path = os.path.join(THUMBS_DIR, filename)
+            
+            with Image.open(image_path) as img:
+                # Calculate thumbnail size (max 320px on larger side)
+                img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+                img.save(thumb_path, 'JPEG', quality=85)
+                
+        except Exception as e:
+            self.logger.error(f"Create thumbnail failed: {e}")
+            
+    def _cleanup_old_files(self):
+        """Remove old files to maintain GALLERY_MAX_ITEMS limit"""
+        try:
+            # Get all files sorted by modification time (oldest first)
+            files = []
+            for filename in os.listdir(GALLERY_DIR):
+                if filename.endswith('.jpg'):
+                    filepath = os.path.join(GALLERY_DIR, filename)
+                    mtime = os.path.getmtime(filepath)
+                    files.append((mtime, filename))
+                    
+            files.sort()  # Oldest first
+            
+            # Remove excess files
+            while len(files) > GALLERY_MAX_ITEMS:
+                _, old_filename = files.pop(0)
+                
+                # Remove original
+                old_filepath = os.path.join(GALLERY_DIR, old_filename)
+                if os.path.exists(old_filepath):
+                    os.remove(old_filepath)
+                    
+                # Remove thumbnail
+                old_thumbpath = os.path.join(THUMBS_DIR, old_filename)
+                if os.path.exists(old_thumbpath):
+                    os.remove(old_thumbpath)
+                    
+                self.logger.info(f"Cleaned up old file: {old_filename}")
+                
+        except Exception as e:
+            self.logger.error(f"Cleanup old files failed: {e}")
                 
     def _check_detections(self):
         """Check for new detections and trigger LED if needed"""
@@ -249,9 +398,16 @@ def create_app():
     detection_tail = DetectionTailThread(led_blinker, logger)
     detection_tail.start()
     
+    # Initialize gallery components
+    os.makedirs(GALLERY_DIR, exist_ok=True)
+    os.makedirs(THUMBS_DIR, exist_ok=True)
+    gallery_collector = GalleryCollector(logger)
+    gallery_collector.start()
+    
     # Store references for cleanup
     app.led_blinker = led_blinker
     app.detection_tail = detection_tail
+    app.gallery_collector = gallery_collector
     
     # Log overlay environment variables
     overlay_env_vars = [
@@ -774,8 +930,77 @@ def create_app():
             "ssid": None
         }, 200
 
+    # Gallery routes
+    @app.get("/photos")
+    def photos():
+        """Photos gallery page"""
+        return render_template('photos.html')
+
+    @app.get("/api/gallery/index")
+    def gallery_index():
+        """Get gallery index with pagination"""
+        try:
+            n = int(request.args.get('n', 60))
+            offset = int(request.args.get('offset', 0))
+            
+            # Get all gallery files
+            files = []
+            if os.path.exists(GALLERY_DIR):
+                for filename in os.listdir(GALLERY_DIR):
+                    if filename.endswith('.jpg'):
+                        filepath = os.path.join(GALLERY_DIR, filename)
+                        if os.path.exists(filepath):
+                            mtime = os.path.getmtime(filepath)
+                            size = os.path.getsize(filepath)
+                            files.append({
+                                'file': filename,
+                                'ts': mtime,
+                                'size': size
+                            })
+            
+            # Sort by timestamp descending (newest first)
+            files.sort(key=lambda x: x['ts'], reverse=True)
+            
+            # Apply pagination
+            total = len(files)
+            files = files[offset:offset + n]
+            
+            return {
+                'files': files,
+                'total': total
+            }, 200
+            
+        except Exception as e:
+            logger.error(f"Gallery index failed: {e}")
+            return {'error': str(e)}, 500
+
+    @app.get("/gallery/<filename>")
+    def gallery_image(filename):
+        """Serve gallery image"""
+        try:
+            return send_from_directory(GALLERY_DIR, filename)
+        except Exception as e:
+            logger.error(f"Gallery image failed: {e}")
+            return {'error': 'File not found'}, 404
+
+    @app.get("/gallery/thumb/<filename>")
+    def gallery_thumb(filename):
+        """Serve gallery thumbnail"""
+        try:
+            return send_from_directory(THUMBS_DIR, filename)
+        except Exception as e:
+            logger.error(f"Gallery thumb failed: {e}")
+            return {'error': 'Thumbnail not found'}, 404
+
     return app
 
 if __name__ == "__main__":
     app = create_app()
     app.run(host="0.0.0.0", port=8098, threaded=True, use_reloader=False)
+
+# CHANGELOG
+# Добавлена страница "Фото детекций" с галереей изображений:
+# - GalleryCollector: фоновый поток для сбора изображений из detections.jsonl
+# - API endpoints: /api/gallery/index, /gallery/<filename>, /gallery/thumb/<filename>
+# - Автоматическое создание миниатюр и ретенция файлов (GALLERY_MAX_ITEMS=1000)
+# - Устойчивость к log-rotate и обработка ошибок

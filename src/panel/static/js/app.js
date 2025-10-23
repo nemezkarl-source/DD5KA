@@ -329,9 +329,97 @@ class PanelController {
     }
 }
 
+// Gallery functionality (for /photos page)
+class GalleryController {
+    constructor() {
+        this.currentOffset = 0;
+        this.itemsPerPage = 60;
+        this.init();
+    }
+
+    init() {
+        const container = document.getElementById('gallery-container');
+        if (!container) return; // Not on photos page
+
+        this.loadGallery(this.itemsPerPage, 0);
+        
+        // Load more button handler
+        const loadMoreBtn = document.getElementById('load-more-btn');
+        if (loadMoreBtn) {
+            loadMoreBtn.addEventListener('click', () => {
+                this.loadGallery(this.itemsPerPage, this.currentOffset);
+            });
+        }
+    }
+
+    formatTime(timestamp) {
+        const date = new Date(timestamp * 1000);
+        return date.toLocaleTimeString('ru-RU', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
+    }
+
+    createGalleryItem(file) {
+        const timeStr = this.formatTime(file.ts);
+        return `
+            <div class="gallery-item">
+                <a href="/gallery/${file.file}" target="_blank">
+                    <img src="/gallery/thumb/${file.file}" alt="Detection ${file.file}">
+                    <div class="caption">${timeStr}</div>
+                </a>
+            </div>
+        `;
+    }
+
+    async loadGallery(n = 60, offset = 0) {
+        const container = document.getElementById('gallery-container');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const loadMoreBtn = document.getElementById('load-more-btn');
+        
+        if (!container) return;
+        
+        try {
+            if (loadingIndicator) loadingIndicator.classList.remove('hidden');
+            if (loadMoreBtn) loadMoreBtn.disabled = true;
+            
+            const response = await fetch(`/api/gallery/index?n=${n}&offset=${offset}`);
+            const data = await response.json();
+            
+            if (data.files && data.files.length > 0) {
+                const html = data.files.map(file => this.createGalleryItem(file)).join('');
+                if (offset === 0) {
+                    container.innerHTML = html;
+                } else {
+                    container.insertAdjacentHTML('beforeend', html);
+                }
+                this.currentOffset = offset + data.files.length;
+                
+                // Hide load more button if we've loaded all items
+                if (this.currentOffset >= data.total && loadMoreBtn) {
+                    loadMoreBtn.style.display = 'none';
+                }
+            } else if (offset === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #666;">Нет изображений в галерее</p>';
+            }
+            
+        } catch (error) {
+            console.error('Failed to load gallery:', error);
+            if (offset === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #f00;">Ошибка загрузки галереи</p>';
+            }
+        } finally {
+            if (loadingIndicator) loadingIndicator.classList.add('hidden');
+            if (loadMoreBtn) loadMoreBtn.disabled = false;
+        }
+    }
+}
+
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new PanelController();
+    new GalleryController();
 });
 
 // CHANGELOG
