@@ -150,9 +150,9 @@ class DetectionTailThread:
             try:
                 self._check_detections()
                 time.sleep(0.25)  # Check every 250ms
-        except Exception as e:
-            self.logger.error(f"Detection monitoring error: {e}")
-            time.sleep(1)
+            except Exception as e:
+                self.logger.error(f"Detection monitoring error: {e}")
+                time.sleep(1)
 
 class GalleryCollector:
     """Background thread that monitors detections.jsonl and collects gallery images"""
