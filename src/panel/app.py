@@ -27,7 +27,11 @@ LED_PIN_BCM = 17
 LED_ACTIVE_HIGH = True  # 1=ON, 0=OFF
 DETECTIONS_FILE = "/home/nemez/project_root/logs/detections.jsonl"
 LED_LAST_OK_FILE = "/home/nemez/project_root/logs/last_led_ok.txt"
-LED_CLASSES = [cls.strip().lower() for cls in (os.getenv("LED_DETECTION_CLASSES") or "drone").split(",")]
+LED_CLASSES = {"drone"}  # сравнивать в lowercase по ключам: class | label | name | class_name
+LED_DEBOUNCE_MS = 1000   # не чаще раза в секунду
+LED_BLINK_SEC = 1.0
+LED_MIN_CONF = float(os.getenv("OVERLAY_MIN_CONF", "0.10"))  # по умолчанию 0.10
+LED_TAIL_HEARTBEAT_FILE = "/home/nemez/project_root/logs/.led_tail_heartbeat"
 
 # Gallery Configuration
 GALLERY_DIR = "/home/nemez/project_root/logs/gallery"
@@ -55,7 +59,7 @@ class LedBlinker:
         self.logger = logger
         self._blink_lock = threading.Lock()
     
-    def blink(self, duration_s=1.0):
+    def blink(self, duration_s=LED_BLINK_SEC):
         """Blink LED for specified duration (thread-safe)"""
         # Try to acquire lock, return immediately if already blinking
         if not self._blink_lock.acquire(blocking=False):
@@ -63,6 +67,8 @@ class LedBlinker:
             return False
             
         try:
+            self.logger.info("LED blink start")
+            
             # Try to import lgpio
             try:
                 import lgpio
@@ -102,7 +108,7 @@ class LedBlinker:
                 except Exception as e:
                     self.logger.warning(f"Failed to write LED timestamp: {e}")
                 
-                self.logger.info(f"LED blinked for {duration_s}s")
+                self.logger.info("LED blink end")
                 return True
                 
             finally:
@@ -457,6 +463,115 @@ def validate_detector_settings(data):
             self.logger.error(f"Error checking detection class: {e}")
             return False
 
+# Global flag for LED tail startup
+_LED_TAIL_STARTED = threading.Event()
+
+def _led_tail_loop():
+    """Background loop for LED tail monitoring detections.jsonl"""
+    logger = logging.getLogger(__name__)
+    last_blink_ts = 0
+    last_heartbeat = 0
+    last_inode = None
+    file_handle = None
+    
+    while True:
+        try:
+            # Check if file exists
+            if not os.path.exists(DETECTIONS_FILE):
+                time.sleep(1)
+                continue
+            
+            # Check for file rotation/truncate
+            current_inode = os.stat(DETECTIONS_FILE).st_ino
+            if last_inode is not None and current_inode != last_inode:
+                logger.info("LED tail reopen (rotate/truncate)")
+                if file_handle:
+                    file_handle.close()
+                file_handle = None
+                last_inode = current_inode
+            
+            # Open file if needed
+            if file_handle is None:
+                file_handle = open(DETECTIONS_FILE, 'r')
+                file_handle.seek(0, 2)  # Seek to EOF
+                last_inode = current_inode
+                logger.info("LED tail started at EOF")
+            
+            # Read new lines
+            line = file_handle.readline()
+            if line:
+                line = line.strip()
+                if line:
+                    try:
+                        event = json.loads(line)
+                        
+                        # Extract detections
+                        detections = event.get("detections", [])
+                        if not detections and "class" in event:
+                            # Single detection format
+                            detections = [event]
+                        
+                        # Process each detection
+                        for detection in detections:
+                            # Get class name
+                            class_name = (detection.get("class") or 
+                                        detection.get("label") or 
+                                        detection.get("name") or 
+                                        detection.get("class_name") or "").strip().lower()
+                            
+                            # Get confidence
+                            conf = float(detection.get("conf") or 
+                                       detection.get("confidence") or 
+                                       detection.get("score") or 0.0)
+                            
+                            # Check trigger condition
+                            if class_name in LED_CLASSES and conf >= LED_MIN_CONF:
+                                now = time.time() * 1000  # Convert to ms
+                                if now - last_blink_ts >= LED_DEBOUNCE_MS:
+                                    logger.info(f"LED blink TRIGGERED: class={class_name}, conf={conf:.3f}")
+                                    # Create LED blinker and trigger
+                                    led_blinker = LedBlinker(logger)
+                                    led_blinker.blink()
+                                    last_blink_ts = now
+                                else:
+                                    logger.info("LED tail skip (debounce)")
+                    
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"LED tail JSON error: {e}")
+                        continue
+            
+            # Heartbeat every 5 seconds
+            now = time.time()
+            if now - last_heartbeat >= 5:
+                logger.info("LED tail alive")
+                try:
+                    with open(LED_TAIL_HEARTBEAT_FILE, 'w') as f:
+                        f.write(str(now))
+                except Exception as e:
+                    logger.warning(f"Failed to write heartbeat: {e}")
+                last_heartbeat = now
+            
+            time.sleep(0.25)  # Check every 250ms
+            
+        except Exception as e:
+            logger.error(f"LED tail error: {e}")
+            if file_handle:
+                try:
+                    file_handle.close()
+                except:
+                    pass
+                file_handle = None
+            time.sleep(1)
+
+def start_led_tail_once():
+    """Start LED tail thread exactly once"""
+    if not _LED_TAIL_STARTED.is_set():
+        thread = threading.Thread(target=_led_tail_loop, daemon=True, name="led-tail")
+        thread.start()
+        _LED_TAIL_STARTED.set()
+        logger = logging.getLogger(__name__)
+        logger.info("LED tail thread boot")
+
 def create_app():
     app = Flask(__name__)
     
@@ -480,6 +595,9 @@ def create_app():
     detection_tail = DetectionTailThread(led_blinker, logger)
     detection_tail.start()
     logger.info("LED tail started")
+    
+    # Start LED tail monitoring
+    start_led_tail_once()
     
     # Initialize gallery components
     os.makedirs(GALLERY_DIR, exist_ok=True)
@@ -989,17 +1107,28 @@ def create_app():
             else:
                 last_ok_ts = None
                 ok = False
+            
+            # Check tail alive status
+            tail_alive = False
+            if os.path.exists(LED_TAIL_HEARTBEAT_FILE):
+                try:
+                    mtime = os.path.getmtime(LED_TAIL_HEARTBEAT_FILE)
+                    tail_alive = (time.time() - mtime) < 10  # Within last 10 seconds
+                except Exception:
+                    tail_alive = False
                 
             return {
                 "ok": ok,
-                "last_ok_ts": last_ok_ts
+                "last_ok_ts": last_ok_ts,
+                "tail_alive": tail_alive
             }, 200
             
         except Exception as e:
             logger.error(f"LED status check failed: {e}")
             return {
                 "ok": False,
-                "last_ok_ts": None
+                "last_ok_ts": None,
+                "tail_alive": False
             }, 500
 
     # NetworkManager status (stub)
