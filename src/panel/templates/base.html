@@ -160,21 +160,75 @@
             align-items: center;
             gap: 8px;
         }
+
+        /* Сетка страницы: 3 колонки */
+        .layout-3col {
+          display: grid;
+          grid-template-columns: 240px 1fr 360px; /* left | center | right */
+          gap: 16px;
+          padding: 12px;
+          height: calc(100vh - 96px); /* грубо: высота минус заголовок и статус-бар */
+          box-sizing: border-box;
+        }
+
+        /* Левая навигация */
+        .nav-panel .nav-list { display: flex; flex-direction: column; gap: 8px; }
+        .nav-btn {
+          display: block;
+          width: 100%;
+          padding: 10px 12px;
+          text-align: left;
+          border: 1px solid #2a2f33;
+          background: #0f1113;
+          color: #d1d5db;
+          border-radius: 6px;
+          cursor: pointer;
+        }
+        .nav-btn:hover { background: #15191d; }
+        .nav-btn.is-active { border-color: #4e9cff; color: #e6f0ff; }
+
+        /* Правая панель логов */
+        .logs-panel { display: flex; flex-direction: column; min-height: 0; }
+        .logs-panel .events-list {
+          flex: 1 1 auto;
+          overflow: auto;
+          border: 1px solid #2a2f33;
+          border-radius: 6px;
+          padding: 8px;
+          background: #0b0d10;
+        }
+
+        /* Центр: стрим заполняет доступное */
+        .center-panel, .stream-container, .stream-wrapper, .stream-aspect-container { height: 100%; }
+        .overlay-container { height: 100%; }
+
+        /* Нижняя строка статусов — одна линия, 4 столбца */
+        .status-bar {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 12px;
+          padding: 8px 12px 12px;
+          border-top: 1px solid #23272b;
+          background: #0b0d10;
+        }
+        .status-cell {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          color: #cbd5e1;
+        }
+        .status-cell .label { opacity: .9; }
+        .status-dot {
+          width: 12px; height: 12px; border-radius: 50%;
+          background: #b91c1c; /* bad по умолчанию */
+          border: 1px solid #111;
+        }
+        .status-dot.ok { background: #16a34a; }
+        .status-dot.bad { background: #b91c1c; }
     </style>
 </head>
 <body>
     <div class="app-container">
-        <nav class="main-nav">
-            <div class="nav-left">
-                <img src="/static/img/1.png" alt="DD5KA Logo" class="logo-image">
-                <span class="nav-title">DD::5::KA</span>
-            </div>
-            <div class="nav-right">
-                <a href="/" class="nav-link">Главная</a>
-                <a href="/photos" class="nav-link">Фото детекций</a>
-                <a href="/settings" class="nav-link">Настройки</a>
-            </div>
-        </nav>
         {% block content %}{% endblock %}
     </div>
     <script src="{{ url_for('static', filename='js/app.js') }}?v=3"></script>
