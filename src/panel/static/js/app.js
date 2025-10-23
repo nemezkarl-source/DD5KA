@@ -3,6 +3,8 @@
 class PanelController {
     constructor() {
         this.isRequestInProgress = false;
+        this.fallbackTimer = null;
+        this.isFallbackVisible = false;
         this.init();
     }
 
@@ -11,6 +13,7 @@ class PanelController {
         this.startPolling();
         this.updateStatus();
         this.handleResize();
+        this.initOverlayStream();
     }
 
     bindEvents() {
@@ -24,6 +27,88 @@ class PanelController {
         
         // Window resize handler
         window.addEventListener('resize', () => this.debounceResize());
+    }
+
+    initOverlayStream() {
+        const overlay = document.getElementById('overlay');
+        const fallback = document.getElementById('overlay-fallback');
+        
+        if (!overlay || !fallback) return;
+
+        // Handle stream errors
+        overlay.addEventListener('error', () => {
+            console.log('Overlay stream error, starting fallback timer');
+            this.startFallbackTimer();
+        });
+
+        // Handle successful stream load
+        overlay.addEventListener('load', () => {
+            console.log('Overlay stream loaded successfully');
+            this.hideFallback();
+        });
+
+        // Start the stream
+        this.reconnectStream();
+    }
+
+    startFallbackTimer() {
+        // Clear existing timer
+        if (this.fallbackTimer) {
+            clearTimeout(this.fallbackTimer);
+        }
+
+        // Start new timer (1000-1500ms)
+        this.fallbackTimer = setTimeout(() => {
+            this.showFallback();
+        }, 1200);
+    }
+
+    showFallback() {
+        const fallback = document.getElementById('overlay-fallback');
+        if (!fallback || this.isFallbackVisible) return;
+
+        console.log('Showing fallback overlay');
+        fallback.classList.remove('hidden');
+        this.isFallbackVisible = true;
+    }
+
+    hideFallback() {
+        const fallback = document.getElementById('overlay-fallback');
+        if (!fallback || !this.isFallbackVisible) return;
+
+        console.log('Hiding fallback overlay');
+        
+        // Clear any pending timer
+        if (this.fallbackTimer) {
+            clearTimeout(this.fallbackTimer);
+            this.fallbackTimer = null;
+        }
+
+        // Smooth fade out (150-250ms)
+        fallback.style.transition = 'opacity 200ms ease-out';
+        fallback.style.opacity = '0';
+        
+        setTimeout(() => {
+            fallback.classList.add('hidden');
+            fallback.style.transition = '';
+            fallback.style.opacity = '';
+            this.isFallbackVisible = false;
+        }, 200);
+    }
+
+    reconnectStream() {
+        const overlay = document.getElementById('overlay');
+        if (!overlay) return;
+
+        console.log('Reconnecting overlay stream');
+        
+        // Reset src to force reconnection
+        overlay.src = '';
+        
+        // Set new source after a brief delay
+        setTimeout(() => {
+            overlay.src = '/overlay.mjpg';
+        }, 100);
     }
 
     async controlDetector(action) {
@@ -228,11 +313,11 @@ class PanelController {
 
     handleResize() {
         // Ensure stream image fits properly
-        const streamImage = document.getElementById('stream-image');
-        if (streamImage) {
-            streamImage.style.maxWidth = '100%';
-            streamImage.style.maxHeight = '100%';
-            streamImage.style.objectFit = 'contain';
+        const overlay = document.getElementById('overlay');
+        if (overlay) {
+            overlay.style.maxWidth = '100%';
+            overlay.style.maxHeight = '100%';
+            overlay.style.objectFit = 'contain';
         }
     }
 
@@ -248,3 +333,6 @@ class PanelController {
 document.addEventListener('DOMContentLoaded', () => {
     new PanelController();
 });
+
+// CHANGELOG
+// Переписан app.js: удалена логика /snapshot, добавлена логика fallback для /overlay.mjpg с таймером 1200ms, реализовано авто-переподключение потока, добавлены методы showFallback/hideFallback с плавным исчезновением

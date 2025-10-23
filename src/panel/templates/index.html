@@ -4,8 +4,11 @@
 <div class="toolbar">
     <div class="toolbar-left">
         <div class="logo">
-            <span class="logo-text">DD::5::KA</span>
-            <span class="logo-subtitle">Drone detector — SETKOMET</span>
+            <img src="/static/img/1.png" alt="DD5KA Logo" class="logo-image">
+            <div class="logo-text">
+                <span class="logo-title">DD::5::KA</span>
+                <span class="logo-subtitle">(Drone detector – SETKOMET)</span>
+            </div>
         </div>
     </div>
     <div class="toolbar-right">
@@ -53,7 +56,12 @@
             </div>
             <div class="stream-wrapper">
                 <div class="stream-aspect-container">
-                    <img id="stream-image" src="/stream/overlay.mjpg" alt="Live Stream" />
+                    <div class="overlay-container">
+                        <img id="overlay" src="/overlay.mjpg" alt="Live Stream" />
+                        <div id="overlay-fallback" class="hidden">
+                            <img src="/static/img/2.png" class="fallback-image">
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -100,3 +108,6 @@
 
 <div id="toast" class="toast hidden"></div>
 {% endblock %}
+
+<!-- CHANGELOG -->
+<!-- Переписан index.html: добавлен логотип слева от заголовка, изменен ID стрима на "overlay", добавлен контейнер overlay-container с fallback-слоем -->
