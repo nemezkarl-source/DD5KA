@@ -28,20 +28,39 @@
     </div>
   </aside>
 
-  <!-- ЦЕНТР: ОКНО КОНТЕНТА (пока стрим) -->
+  <!-- ЦЕНТР: ОКНО КОНТЕНТА (3 вьюшки) -->
   <main class="center-panel">
-    <div class="stream-container">
-      <div class="stream-wrapper">
-        <div class="stream-aspect-container">
-          <div class="overlay-container">
-            <img id="overlay" src="/overlay.mjpg" alt="Live Stream" />
-            <div id="overlay-fallback" class="hidden">
-              <img src="/static/img/2.png" class="fallback-image" alt="fallback">
+    <!-- Стрим -->
+    <section id="view-stream">
+      <div class="stream-container">
+        <div class="stream-wrapper">
+          <div class="stream-aspect-container">
+            <div class="overlay-container">
+              <img id="overlay" src="/overlay.mjpg" alt="Live Stream" />
+              <div id="overlay-fallback" class="hidden">
+                <img src="/static/img/2.png" class="fallback-image" alt="fallback">
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
+    </section>
+
+    <!-- Фото детекций (заглушка) -->
+    <section id="view-photos" class="hidden-view">
+      <div class="placeholder-card">
+        <h3>Галерея детекций</h3>
+        <p>Галерея детекций будет добавлена на следующем шаге</p>
+      </div>
+    </section>
+
+    <!-- Настройки (заглушка) -->
+    <section id="view-settings" class="hidden-view">
+      <div class="placeholder-card">
+        <h3>Настройки системы</h3>
+        <p>Страница настроек будет добавлена на следующем шаге</p>
+      </div>
+    </section>
   </main>
 
   <!-- ПРАВАЯ ПАНЕЛЬ: ЛОГИ -->
@@ -83,3 +102,4 @@
 
 <!-- CHANGELOG -->
 <!-- Архитектура: навигация слева; центр=стрим; справа=логи; низ=4 статуса в ряд. Верхняя навигация удалена. -->
+<!-- Этап 2: SPA-переключение вью (стрим/фото/настройки) с заглушками. -->

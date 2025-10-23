@@ -16,6 +16,7 @@ class PanelController {
         this.updateStatus();
         this.handleResize();
         this.initOverlayStream();
+        this.initSpaViews();
     }
 
     bindEvents() {
@@ -223,7 +224,7 @@ class PanelController {
 
     async updateEvents() {
         try {
-            const response = await this.fetchWithTimeout('/api/logs/last?n=10', {}, 5000);
+            const response = await this.fetchWithTimeout('/api/logs/last?n=15', {}, 5000);
             const events = await response.json();
             this.renderEvents(events.events || []);
         } catch (error) {
@@ -326,6 +327,58 @@ class PanelController {
         this.resizeTimeout = setTimeout(() => {
             this.handleResize();
         }, 100);
+    }
+
+    initSpaViews() {
+        // Навесить обработчики на все .nav-btn
+        const navButtons = document.querySelectorAll('.nav-btn');
+        navButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                // Снять .is-active со всех кнопок
+                navButtons.forEach(btn => btn.classList.remove('is-active'));
+                // Поставить .is-active на выбранную кнопку
+                button.classList.add('is-active');
+                // Показать соответствующую вьюшку
+                const viewName = button.getAttribute('data-view');
+                this.showView(viewName);
+            });
+        });
+
+        // При первом старте установить активной кнопку "Стрим" и показать view "stream"
+        const streamButton = document.querySelector('[data-view="stream"]');
+        if (streamButton) {
+            streamButton.classList.add('is-active');
+            this.showView('stream');
+        }
+    }
+
+    showView(view) {
+        // Скрыть все три секции
+        const views = ['stream', 'photos', 'settings'];
+        views.forEach(viewId => {
+            const element = document.getElementById(`view-${viewId}`);
+            if (element) {
+                element.classList.add('hidden-view');
+            }
+        });
+
+        // Показать выбранную секцию
+        const targetView = document.getElementById(`view-${view}`);
+        if (targetView) {
+            targetView.classList.remove('hidden-view');
+        }
+
+        if (view === 'stream') {
+            // Гарантировать, что стрим активен
+            this.reconnectStream();
+            this.hideFallback();
+        } else {
+            // Отключить поток для экономии трафика
+            const img = document.getElementById('overlay');
+            if (img) {
+                img.src = '';
+            }
+        }
     }
 }
 
@@ -616,3 +669,4 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // CHANGELOG
 // Переписан app.js: удалена логика /snapshot, добавлена логика fallback для /overlay.mjpg с таймером 1200ms, реализовано авто-переподключение потока, добавлены методы showFallback/hideFallback с плавным исчезновением
+// Этап 2: SPA-переключение контента + 15 событий в логе
