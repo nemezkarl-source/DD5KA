@@ -5,6 +5,8 @@ class PanelController {
         this.isRequestInProgress = false;
         this.fallbackTimer = null;
         this.isFallbackVisible = false;
+        this.firstFrameOk = false;
+        this.lastReconnectAt = 0;
         this.init();
     }
 
@@ -37,13 +39,16 @@ class PanelController {
 
         // Handle stream errors
         overlay.addEventListener('error', () => {
-            console.log('Overlay stream error, starting fallback timer');
-            this.startFallbackTimer();
+            // мягко подождать и только потом реконнект
+            if (this.fallbackTimer) clearTimeout(this.fallbackTimer);
+            this.showFallback();
+            setTimeout(() => this.reconnectStream(), 800);
         });
 
         // Handle successful stream load
         overlay.addEventListener('load', () => {
-            console.log('Overlay stream loaded successfully');
+            // load у MJPEG срабатывает на первый кадр
+            this.firstFrameOk = true;
             this.hideFallback();
         });
 
@@ -51,17 +56,6 @@ class PanelController {
         this.reconnectStream();
     }
 
-    startFallbackTimer() {
-        // Clear existing timer
-        if (this.fallbackTimer) {
-            clearTimeout(this.fallbackTimer);
-        }
-
-        // Start new timer (1000-1500ms)
-        this.fallbackTimer = setTimeout(() => {
-            this.showFallback();
-        }, 1200);
-    }
 
     showFallback() {
         const fallback = document.getElementById('overlay-fallback');
@@ -100,15 +94,21 @@ class PanelController {
         const overlay = document.getElementById('overlay');
         if (!overlay) return;
 
-        console.log('Reconnecting overlay stream');
-        
-        // Reset src to force reconnection
-        overlay.src = '';
-        
-        // Set new source after a brief delay
-        setTimeout(() => {
-            overlay.src = '/overlay.mjpg';
-        }, 100);
+        const now = Date.now();
+        if (now - this.lastReconnectAt < 5000) { // не чаще, чем раз в 5с
+            return;
+        }
+        this.lastReconnectAt = now;
+        this.firstFrameOk = false;
+
+        const url = '/overlay.mjpg?t=' + now; // cache-buster
+        overlay.src = url;
+
+        // watchdog R2: если за 1200 мс не пришёл первый load — показать fallback
+        if (this.fallbackTimer) clearTimeout(this.fallbackTimer);
+        this.fallbackTimer = setTimeout(() => {
+            if (!this.firstFrameOk) this.showFallback();
+        }, 1200);
     }
 
     async controlDetector(action) {

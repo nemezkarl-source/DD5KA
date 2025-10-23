@@ -35,6 +35,52 @@
             max-height: 100%;
             object-fit: contain;
         }
+
+        /* ——— HEADER / TOOLBAR ——— */
+        .toolbar {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 16px;
+          align-items: center;
+          padding: 8px 12px;
+        }
+
+        .logo {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .logo-image {
+          height: 24px;      /* ↓ маленькая иконка-шеврон */
+          width: auto;
+          display: block;
+          image-rendering: auto;
+        }
+
+        .logo-title { font-weight: 700; letter-spacing: 1px; }
+        .logo-subtitle { opacity: .7; margin-left: 6px; }
+
+        /* ——— STREAM LAYOUT ——— */
+        .stream-wrapper { height: 100%; }
+        .stream-aspect-container { height: 100%; }
+        .overlay-container img#overlay {
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;     /* вписываемся в окно */
+          display: block;
+          background: transparent; /* не трогаем прозрачность PNG */
+        }
+
+        /* ——— FALLBACK OVERLAY ——— */
+        #overlay-fallback {
+          /* уже есть: absolute+inset+z-index+transition */
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        #overlay-fallback.hidden { opacity: 0; pointer-events: none; }
+        .fallback-image { max-width: 100%; max-height: 100%; object-fit: contain; }
     </style>
 </head>
 <body>
