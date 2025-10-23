@@ -251,7 +251,7 @@ class PanelController {
         if (!container) return;
 
         if (events.length === 0) {
-            container.innerHTML = '<div class="event-item"><span class="event-time">—</span><span class="event-class">—</span><span class="event-conf">—</span><span class="event-bbox">—</span></div>';
+            container.innerHTML = '<div class="event-item"><span class="event-time">—</span><span class="event-conf">—</span></div>';
             return;
         }
 
@@ -259,13 +259,12 @@ class PanelController {
             const timestamp = new Date(event.ts).toLocaleTimeString('ru-RU');
             const detections = event.detections || [];
             const firstDetection = detections[0];
+            const confidence = firstDetection ? (firstDetection.conf * 100).toFixed(1) + '%' : '—';
             
             return `
                 <div class="event-item">
                     <span class="event-time">${timestamp}</span>
-                    <span class="event-class">${firstDetection ? firstDetection.class_name : '—'}</span>
-                    <span class="event-conf">${firstDetection ? (firstDetection.conf * 100).toFixed(1) + '%' : '—'}</span>
-                    <span class="event-bbox">${firstDetection ? `[${firstDetection.bbox_xyxy.map(x => Math.round(x)).join(',')}]` : '—'}</span>
+                    <span class="event-conf">${confidence}</span>
                 </div>
             `;
         }).join('');

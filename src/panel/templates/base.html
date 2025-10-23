@@ -192,11 +192,26 @@
         .logs-panel .events-list {
           flex: 1 1 auto;
           overflow: auto;
+          overflow-x: hidden;
           border: 1px solid #2a2f33;
           border-radius: 6px;
           padding: 8px;
           background: #0b0d10;
         }
+        .event-item { 
+          display: flex; 
+          justify-content: space-between; 
+          align-items: center; 
+          gap: 8px; 
+          padding: 6px 10px; 
+          font-size: 0.95rem; 
+        }
+        .events-compact .event-item { 
+          font-size: 0.9rem; 
+          padding: 5px 8px; 
+        }
+        .event-time { opacity: .9; }
+        .event-conf { font-weight: 600; }
 
         /* Центр: стрим заполняет доступное */
         .center-panel, .stream-container, .stream-wrapper, .stream-aspect-container { height: 100%; }
@@ -210,12 +225,26 @@
           padding: 8px 12px 12px;
           border-top: 1px solid #23272b;
           background: #0b0d10;
+          width: 100vw;
+          margin-left: calc(50% - 50vw);
+          margin-right: calc(50% - 50vw);
         }
         .status-cell {
           display: flex;
           align-items: center;
           gap: 8px;
           color: #cbd5e1;
+          position: relative;
+          padding: 10px 14px;
+        }
+        .status-cell:not(:last-child)::after {
+          content: "";
+          position: absolute;
+          top: 8px;
+          right: 0;
+          bottom: 8px;
+          width: 1px;
+          background: #23272b;
         }
         .status-cell .label { opacity: .9; }
         .status-dot {

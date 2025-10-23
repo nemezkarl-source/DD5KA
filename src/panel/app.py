@@ -146,10 +146,16 @@ class DetectionTailThread:
         
     def _monitor_loop(self):
         """Main monitoring loop"""
+        last_alive_log = time.time()
         while not self._stop_event.is_set():
             try:
                 self._check_detections()
                 time.sleep(0.25)  # Check every 250ms
+                
+                # Log alive status every 30 seconds
+                if time.time() - last_alive_log > 30:
+                    self.logger.info("LED tail alive")
+                    last_alive_log = time.time()
             except Exception as e:
                 self.logger.error(f"Detection monitoring error: {e}")
                 time.sleep(1)
@@ -473,6 +479,7 @@ def create_app():
     led_blinker = LedBlinker(logger)
     detection_tail = DetectionTailThread(led_blinker, logger)
     detection_tail.start()
+    logger.info("LED tail started")
     
     # Initialize gallery components
     os.makedirs(GALLERY_DIR, exist_ok=True)
