@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+
+{% block title %}Настройки - DD::5::KA{% endblock %}
+
+{% block content %}
+<div id="settings-root" class="settings-content">
+    <div class="settings-header">
+        <h2>Настройки системы</h2>
+        <p>Управление параметрами отображения и детектора</p>
+    </div>
+
+    <div class="settings-sections">
+        <!-- Panel Settings Section -->
+        <div class="settings-section">
+            <div class="section-header">
+                <h3>Отображение оверлея</h3>
+                <p>Параметры наложения детекций на видео</p>
+            </div>
+            
+            <form id="panel-settings-form" class="settings-form">
+                <div class="form-group">
+                    <label for="overlay_min_conf">
+                        Минимальная уверенность (0.0 - 1.0)
+                        <span class="field-info">Рекомендуем: 0.10-0.30</span>
+                    </label>
+                    <input type="number" 
+                           id="overlay_min_conf" 
+                           name="overlay_min_conf" 
+                           step="0.01" 
+                           min="0.0" 
+                           max="1.0" 
+                           class="form-input">
+                    <div class="field-description">
+                        Показывать детекции только с уверенностью выше этого значения
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label for="overlay_det_max_age_ms">
+                        Максимальный возраст детекции (мс)
+                        <span class="field-info">Рекомендуем: 10000-20000</span>
+                    </label>
+                    <input type="number" 
+                           id="overlay_det_max_age_ms" 
+                           name="overlay_det_max_age_ms" 
+                           min="1000" 
+                           max="60000" 
+                           step="1000" 
+                           class="form-input">
+                    <div class="field-description">
+                        Время отображения детекции на оверлее (в миллисекундах)
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">
+                        <span class="btn-text">Сохранить</span>
+                        <span class="btn-loading hidden">Сохранение...</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Detector Settings Section -->
+        <div class="settings-section">
+            <div class="section-header">
+                <h3>Детектор (CH4)</h3>
+                <p>Параметры алгоритма детекции дронов</p>
+            </div>
+            
+            <form id="detector-settings-form" class="settings-form">
+                <div class="form-group">
+                    <label for="detector_conf_threshold">
+                        Порог уверенности детектора (0.0 - 1.0)
+                        <span class="field-info">Рекомендуем: 0.20-0.40</span>
+                    </label>
+                    <input type="number" 
+                           id="detector_conf_threshold" 
+                           name="detector_conf_threshold" 
+                           step="0.01" 
+                           min="0.0" 
+                           max="1.0" 
+                           class="form-input">
+                    <div class="field-description">
+                        Минимальная уверенность для срабатывания детектора
+                    </div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-warning">
+                        <span class="btn-text">Сохранить и перезапустить детектор</span>
+                        <span class="btn-loading hidden">Сохранение и перезапуск...</span>
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<style>
+.settings-content {
+    padding: 20px;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.settings-header {
+    text-align: center;
+    margin-bottom: 40px;
+}
+
+.settings-header h2 {
+    color: #333;
+    margin-bottom: 10px;
+}
+
+.settings-header p {
+    color: #666;
+    margin: 0;
+}
+
+.settings-sections {
+    display: flex;
+    flex-direction: column;
+    gap: 40px;
+}
+
+.settings-section {
+    background: #fff;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    padding: 30px;
+}
+
+.section-header {
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 1px solid #eee;
+}
+
+.section-header h3 {
+    color: #333;
+    margin-bottom: 8px;
+    font-size: 1.2em;
+}
+
+.section-header p {
+    color: #666;
+    margin: 0;
+    font-size: 0.9em;
+}
+
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 25px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.form-group label {
+    font-weight: 600;
+    color: #333;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.field-info {
+    font-weight: 400;
+    color: #666;
+    font-size: 0.85em;
+    font-style: italic;
+}
+
+.form-input {
+    padding: 12px 16px;
+    border: 2px solid #ddd;
+    border-radius: 6px;
+    font-size: 16px;
+    transition: border-color 0.2s ease;
+    background: #fff;
+}
+
+.form-input:focus {
+    outline: none;
+    border-color: #007bff;
+    box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
+.field-description {
+    font-size: 0.85em;
+    color: #666;
+    margin-top: 4px;
+}
+
+.form-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 20px;
+}
+
+.btn {
+    padding: 12px 24px;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 200px;
+    justify-content: center;
+}
+
+.btn-primary {
+    background: #007bff;
+    color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #0056b3;
+    transform: translateY(-1px);
+}
+
+.btn-warning {
+    background: #ffc107;
+    color: #212529;
+}
+
+.btn-warning:hover:not(:disabled) {
+    background: #e0a800;
+    transform: translateY(-1px);
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.btn-loading {
+    display: none;
+}
+
+.btn.loading .btn-text {
+    display: none;
+}
+
+.btn.loading .btn-loading {
+    display: inline;
+}
+
+.hidden {
+    display: none;
+}
+
+@media (max-width: 768px) {
+    .settings-content {
+        padding: 15px;
+    }
+    
+    .settings-section {
+        padding: 20px;
+    }
+    
+    .btn {
+        min-width: auto;
+        width: 100%;
+    }
+}
+</style>
+{% endblock %}

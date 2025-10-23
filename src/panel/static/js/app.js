@@ -416,10 +416,202 @@ class GalleryController {
     }
 }
 
+// Settings functionality (for /settings page)
+class SettingsController {
+    constructor() {
+        this.init();
+    }
+
+    init() {
+        const settingsRoot = document.getElementById('settings-root');
+        if (!settingsRoot) return; // Not on settings page
+
+        this.loadSettings();
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        // Panel settings form
+        const panelForm = document.getElementById('panel-settings-form');
+        if (panelForm) {
+            panelForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.savePanelSettings();
+            });
+        }
+
+        // Detector settings form
+        const detectorForm = document.getElementById('detector-settings-form');
+        if (detectorForm) {
+            detectorForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.saveDetectorSettings();
+            });
+        }
+    }
+
+    async loadSettings() {
+        try {
+            // Load panel settings
+            const panelResponse = await fetch('/api/settings/panel');
+            if (panelResponse.ok) {
+                const panelSettings = await panelResponse.json();
+                this.populateForm('panel-settings-form', panelSettings);
+            }
+
+            // Load detector settings
+            const detectorResponse = await fetch('/api/settings/detector');
+            if (detectorResponse.ok) {
+                const detectorSettings = await detectorResponse.json();
+                this.populateForm('detector-settings-form', detectorSettings);
+            }
+        } catch (error) {
+            console.error('Failed to load settings:', error);
+            this.showToast('Ошибка загрузки настроек', 'error');
+        }
+    }
+
+    populateForm(formId, settings) {
+        const form = document.getElementById(formId);
+        if (!form) return;
+
+        Object.keys(settings).forEach(key => {
+            const input = form.querySelector(`[name="${key}"]`);
+            if (input) {
+                input.value = settings[key];
+            }
+        });
+    }
+
+    async savePanelSettings() {
+        const form = document.getElementById('panel-settings-form');
+        const button = form.querySelector('button[type="submit"]');
+        
+        try {
+            this.setButtonLoading(button, true);
+            
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+            
+            // Convert string values to appropriate types
+            if (data.overlay_min_conf) {
+                data.overlay_min_conf = parseFloat(data.overlay_min_conf);
+            }
+            if (data.overlay_det_max_age_ms) {
+                data.overlay_det_max_age_ms = parseInt(data.overlay_det_max_age_ms);
+            }
+
+            const response = await fetch('/api/settings/panel', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                this.showToast('Настройки панели сохранены', 'success');
+            } else {
+                this.showToast(`Ошибка: ${result.error}`, 'error');
+            }
+        } catch (error) {
+            console.error('Save panel settings failed:', error);
+            this.showToast('Ошибка сохранения настроек панели', 'error');
+        } finally {
+            this.setButtonLoading(button, false);
+        }
+    }
+
+    async saveDetectorSettings() {
+        const form = document.getElementById('detector-settings-form');
+        const button = form.querySelector('button[type="submit"]');
+        
+        try {
+            this.setButtonLoading(button, true);
+            
+            const formData = new FormData(form);
+            const data = Object.fromEntries(formData.entries());
+            
+            // Convert string values to appropriate types
+            if (data.detector_conf_threshold) {
+                data.detector_conf_threshold = parseFloat(data.detector_conf_threshold);
+            }
+
+            // Save detector settings
+            const settingsResponse = await fetch('/api/settings/detector', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(data)
+            });
+
+            const settingsResult = await settingsResponse.json();
+
+            if (!settingsResponse.ok) {
+                this.showToast(`Ошибка сохранения: ${settingsResult.error}`, 'error');
+                return;
+            }
+
+            // Restart detector service
+            const restartResponse = await fetch('/api/detector/restart', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            const restartResult = await restartResponse.json();
+
+            if (restartResponse.ok) {
+                this.showToast('Настройки детектора сохранены и сервис перезапущен', 'success');
+            } else {
+                this.showToast(`Настройки сохранены, но ошибка перезапуска: ${restartResult.error}`, 'error');
+            }
+        } catch (error) {
+            console.error('Save detector settings failed:', error);
+            this.showToast('Ошибка сохранения настроек детектора', 'error');
+        } finally {
+            this.setButtonLoading(button, false);
+        }
+    }
+
+    setButtonLoading(button, loading) {
+        if (loading) {
+            button.disabled = true;
+            button.classList.add('loading');
+        } else {
+            button.disabled = false;
+            button.classList.remove('loading');
+        }
+    }
+
+    showToast(message, type = 'info') {
+        // Create toast element if it doesn't exist
+        let toast = document.getElementById('toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'toast';
+            toast.className = 'toast hidden';
+            document.body.appendChild(toast);
+        }
+
+        toast.textContent = message;
+        toast.className = `toast ${type}`;
+        
+        setTimeout(() => {
+            toast.classList.add('hidden');
+        }, 3000);
+    }
+}
+
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
     new PanelController();
     new GalleryController();
+    new SettingsController();
 });
 
 // CHANGELOG

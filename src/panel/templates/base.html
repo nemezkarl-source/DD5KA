@@ -121,6 +121,38 @@
             background-color: #e9ecef;
             color: #333;
         }
+
+        /* ——— TOAST NOTIFICATIONS ——— */
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            color: white;
+            font-weight: 500;
+            z-index: 1000;
+            transition: all 0.3s ease;
+            max-width: 400px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        .toast.success {
+            background: #28a745;
+        }
+
+        .toast.error {
+            background: #dc3545;
+        }
+
+        .toast.info {
+            background: #17a2b8;
+        }
+
+        .toast.hidden {
+            opacity: 0;
+            transform: translateX(100%);
+        }
     </style>
 </head>
 <body>
@@ -133,6 +165,7 @@
             <div class="nav-right">
                 <a href="/" class="nav-link">Главная</a>
                 <a href="/photos" class="nav-link">Фото детекций</a>
+                <a href="/settings" class="nav-link">Настройки</a>
             </div>
         </nav>
         {% block content %}{% endblock %}

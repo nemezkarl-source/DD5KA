@@ -34,6 +34,20 @@ GALLERY_DIR = "/home/nemez/project_root/logs/gallery"
 THUMBS_DIR = f"{GALLERY_DIR}/thumbs"
 GALLERY_MAX_ITEMS = 1000
 
+# Settings Configuration
+PANEL_SETTINGS = "/home/nemez/project_root/configs/panel_settings.json"
+DETECTOR_SETTINGS = "/home/nemez/project_root/configs/detector_settings.json"
+
+# Default settings
+DEFAULT_PANEL_SETTINGS = {
+    "overlay_min_conf": 0.10,
+    "overlay_det_max_age_ms": 15000
+}
+
+DEFAULT_DETECTOR_SETTINGS = {
+    "detector_conf_threshold": 0.25
+}
+
 class LedBlinker:
     """Thread-safe LED blinking with GPIO control"""
     
@@ -281,6 +295,68 @@ class GalleryCollector:
                 
         except Exception as e:
             self.logger.error(f"Cleanup old files failed: {e}")
+
+def load_settings(settings_file, default_settings):
+    """Load settings from JSON file or return defaults"""
+    try:
+        if os.path.exists(settings_file):
+            with open(settings_file, 'r') as f:
+                settings = json.load(f)
+                # Merge with defaults to ensure all keys exist
+                merged = default_settings.copy()
+                merged.update(settings)
+                return merged
+        else:
+            return default_settings.copy()
+    except Exception as e:
+        return default_settings.copy()
+
+def save_settings(settings_file, settings, logger):
+    """Save settings to JSON file"""
+    try:
+        os.makedirs(os.path.dirname(settings_file), exist_ok=True)
+        with open(settings_file, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        logger.error(f"Failed to save settings: {e}")
+        return False
+
+def validate_panel_settings(data):
+    """Validate panel settings"""
+    errors = []
+    
+    if 'overlay_min_conf' in data:
+        try:
+            conf = float(data['overlay_min_conf'])
+            if not (0.0 <= conf <= 1.0):
+                errors.append("overlay_min_conf must be between 0.0 and 1.0")
+        except (ValueError, TypeError):
+            errors.append("overlay_min_conf must be a valid number")
+    
+    if 'overlay_det_max_age_ms' in data:
+        try:
+            age = int(data['overlay_det_max_age_ms'])
+            if not (1000 <= age <= 60000):
+                errors.append("overlay_det_max_age_ms must be between 1000 and 60000")
+        except (ValueError, TypeError):
+            errors.append("overlay_det_max_age_ms must be a valid integer")
+    
+    return errors
+
+def validate_detector_settings(data):
+    """Validate detector settings"""
+    errors = []
+    
+    if 'detector_conf_threshold' in data:
+        try:
+            conf = float(data['detector_conf_threshold'])
+            if not (0.0 <= conf <= 1.0):
+                errors.append("detector_conf_threshold must be between 0.0 and 1.0")
+        except (ValueError, TypeError):
+            errors.append("detector_conf_threshold must be a valid number")
+    
+    return errors
                 
     def _check_detections(self):
         """Check for new detections and trigger LED if needed"""
@@ -991,6 +1067,113 @@ def create_app():
         except Exception as e:
             logger.error(f"Gallery thumb failed: {e}")
             return {'error': 'Thumbnail not found'}, 404
+
+    # Settings routes
+    @app.get("/settings")
+    def settings():
+        """Settings page"""
+        return render_template('settings.html')
+
+    @app.get("/api/settings/panel")
+    def get_panel_settings():
+        """Get panel settings"""
+        try:
+            settings = load_settings(PANEL_SETTINGS, DEFAULT_PANEL_SETTINGS)
+            return settings, 200
+        except Exception as e:
+            logger.error(f"Get panel settings failed: {e}")
+            return {'error': str(e)}, 500
+
+    @app.post("/api/settings/panel")
+    def save_panel_settings():
+        """Save panel settings"""
+        try:
+            data = request.get_json()
+            if not data:
+                return {'error': 'No data provided'}, 400
+            
+            # Validate settings
+            errors = validate_panel_settings(data)
+            if errors:
+                return {'error': 'Validation failed', 'details': errors}, 400
+            
+            # Load current settings and merge
+            current_settings = load_settings(PANEL_SETTINGS, DEFAULT_PANEL_SETTINGS)
+            current_settings.update(data)
+            
+            # Save settings
+            if save_settings(PANEL_SETTINGS, current_settings, logger):
+                logger.info(f"Panel settings saved: {current_settings}")
+                return {'success': True, 'settings': current_settings}, 200
+            else:
+                return {'error': 'Failed to save settings'}, 500
+                
+        except Exception as e:
+            logger.error(f"Save panel settings failed: {e}")
+            return {'error': str(e)}, 500
+
+    @app.get("/api/settings/detector")
+    def get_detector_settings():
+        """Get detector settings"""
+        try:
+            settings = load_settings(DETECTOR_SETTINGS, DEFAULT_DETECTOR_SETTINGS)
+            return settings, 200
+        except Exception as e:
+            logger.error(f"Get detector settings failed: {e}")
+            return {'error': str(e)}, 500
+
+    @app.post("/api/settings/detector")
+    def save_detector_settings():
+        """Save detector settings"""
+        try:
+            data = request.get_json()
+            if not data:
+                return {'error': 'No data provided'}, 400
+            
+            # Validate settings
+            errors = validate_detector_settings(data)
+            if errors:
+                return {'error': 'Validation failed', 'details': errors}, 400
+            
+            # Load current settings and merge
+            current_settings = load_settings(DETECTOR_SETTINGS, DEFAULT_DETECTOR_SETTINGS)
+            current_settings.update(data)
+            
+            # Save settings
+            if save_settings(DETECTOR_SETTINGS, current_settings, logger):
+                logger.info(f"Detector settings saved: {current_settings}")
+                return {'success': True, 'settings': current_settings}, 200
+            else:
+                return {'error': 'Failed to save settings'}, 500
+                
+        except Exception as e:
+            logger.error(f"Save detector settings failed: {e}")
+            return {'error': str(e)}, 500
+
+    @app.post("/api/detector/restart")
+    def restart_detector():
+        """Restart detector service"""
+        try:
+            result = subprocess.run(
+                ['systemctl', 'restart', 'dd5ka-detector.service'],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                logger.info("Detector service restarted successfully")
+                return {'success': True, 'message': 'Detector restarted'}, 200
+            else:
+                logger.error(f"Failed to restart detector: {result.stderr}")
+                return {'error': f'Restart failed: {result.stderr}'}, 500
+                
+        except subprocess.TimeoutExpired:
+            logger.error("Detector restart timeout")
+            return {'error': 'Restart timeout'}, 500
+        except Exception as e:
+            logger.error(f"Detector restart failed: {e}")
+            return {'error': str(e)}, 500
 
     return app
 
