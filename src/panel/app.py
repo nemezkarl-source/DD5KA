@@ -25,6 +25,7 @@ LED_PIN_BCM = 17
 LED_ACTIVE_HIGH = True  # 1=ON, 0=OFF
 DETECTIONS_FILE = "/home/nemez/project_root/logs/detections.jsonl"
 LED_LAST_OK_FILE = "/home/nemez/project_root/logs/last_led_ok.txt"
+LED_CLASSES = [cls.strip().lower() for cls in (os.getenv("LED_DETECTION_CLASSES") or "drone").split(",")]
 
 class LedBlinker:
     """Thread-safe LED blinking with GPIO control"""
@@ -32,20 +33,13 @@ class LedBlinker:
     def __init__(self, logger):
         self.logger = logger
         self._blink_lock = threading.Lock()
-        self._is_blinking = False
     
     def blink(self, duration_s=1.0):
         """Blink LED for specified duration (thread-safe)"""
-        if self._blink_lock.locked():
+        # Try to acquire lock, return immediately if already blinking
+        if not self._blink_lock.acquire(blocking=False):
             self.logger.info("LED blink already in progress, skipping")
             return False
-            
-        with self._blink_lock:
-            if self._is_blinking:
-                self.logger.info("LED blink already in progress, skipping")
-                return False
-                
-            self._is_blinking = True
             
         try:
             # Try to import lgpio
@@ -102,7 +96,7 @@ class LedBlinker:
             self.logger.error(f"LED blink failed: {e}")
             return False
         finally:
-            self._is_blinking = False
+            self._blink_lock.release()
 
 class DetectionTailThread:
     """Background thread to monitor detection file and trigger LED blinks"""
@@ -114,7 +108,7 @@ class DetectionTailThread:
         self._last_position = 0
         self._last_inode = None
         self._last_blink_time = 0
-        self._debounce_ms = 900  # Don't blink more than once per 900ms
+        self._debounce_ms = 1000  # Don't blink more than once per second
         
     def start(self):
         """Start the detection monitoring thread"""
@@ -150,6 +144,13 @@ class DetectionTailThread:
             current_inode = stat.st_ino
             current_size = stat.st_size
             
+            # Initialize position to EOF if first time
+            if self._last_inode is None:
+                self._last_position = current_size
+                self._last_inode = current_inode
+                self.logger.info("Detection tail started from EOF")
+                return
+                
             # If file was rotated/truncated, reset position
             if self._last_inode != current_inode:
                 self._last_position = 0
@@ -168,24 +169,26 @@ class DetectionTailThread:
                     new_content = f.read()
                     self._last_position = current_size
                     
-                    # Check for valid JSON lines
+                    # Check for valid JSON lines with class filtering
                     lines = new_content.strip().split('\n')
-                    valid_lines = 0
+                    matching_detections = 0
                     
                     for line in lines:
                         line = line.strip()
                         if line:
                             try:
-                                json.loads(line)
-                                valid_lines += 1
+                                event = json.loads(line)
+                                # Check if this is a detection event with matching class
+                                if self._should_trigger_led(event):
+                                    matching_detections += 1
                             except json.JSONDecodeError:
                                 continue
                     
-                    # Trigger LED if we have valid new detections
-                    if valid_lines > 0:
+                    # Trigger LED if we have matching detections
+                    if matching_detections > 0:
                         current_time = time.time() * 1000  # Convert to ms
                         if current_time - self._last_blink_time >= self._debounce_ms:
-                            self.logger.info(f"New detection(s) found, triggering LED blink")
+                            self.logger.info(f"New drone detection(s) found, triggering LED blink")
                             self.led_blinker.blink(1.0)
                             self._last_blink_time = current_time
                         else:
@@ -193,6 +196,35 @@ class DetectionTailThread:
                             
         except Exception as e:
             self.logger.error(f"Error checking detections: {e}")
+            
+    def _should_trigger_led(self, event):
+        """Check if event should trigger LED based on class filtering"""
+        try:
+            # Check if this is a detection event
+            if event.get("type") != "detection":
+                return False
+                
+            # Get detections array
+            detections = event.get("detections", [])
+            if not detections:
+                return False
+                
+            # Check each detection for matching class
+            for detection in detections:
+                # Try different possible class field names
+                class_name = (detection.get("class") or 
+                             detection.get("label") or 
+                             detection.get("name") or 
+                             detection.get("class_name") or "").strip().lower()
+                
+                if class_name in LED_CLASSES:
+                    return True
+                    
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error checking detection class: {e}")
+            return False
 
 def create_app():
     app = Flask(__name__)
@@ -380,7 +412,7 @@ def create_app():
             width, height = 2028, 1520
         
         try:
-            # Use rpicam-vid for MJPEG streaming
+            # Use rpicam-vid for MJPEG streaming with proper cleanup
             cmd = [
                 "/usr/bin/rpicam-vid",
                 "-n",  # no preview
@@ -389,17 +421,20 @@ def create_app():
                 "--height", str(height),
                 "--framerate", "15",
                 "--bitrate", "2000000",  # 2Mbps
+                "--codec", "mjpeg",  # Explicit MJPEG codec
                 "--inline",  # inline headers
                 "-o", "-"  # output to stdout
             ]
             
             def generate():
+                process = None
                 try:
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        bufsize=0
+                        bufsize=0,
+                        start_new_session=True  # Prevent zombie processes
                     )
                     
                     # Stream MJPEG data
@@ -409,15 +444,36 @@ def create_app():
                             break
                         yield chunk
                         
+                except GeneratorExit:
+                    # Client disconnected, clean up process
+                    logger.info("Stream client disconnected, cleaning up process")
                 except Exception as e:
                     logger.error(f"stream failed: {e}")
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
                     yield b"Stream error"
                     yield b"\r\n"
                 finally:
-                    if 'process' in locals():
-                        process.terminate()
-                        process.wait()
+                    if process:
+                        try:
+                            # Close stdout first
+                            if process.stdout:
+                                process.stdout.close()
+                            # Terminate process gracefully
+                            process.terminate()
+                            # Wait for termination with timeout
+                            try:
+                                process.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired:
+                                # Force kill if graceful termination failed
+                                logger.warning("Process termination timeout, force killing")
+                                import signal
+                                import os
+                                try:
+                                    os.killpg(process.pid, signal.SIGKILL)
+                                except (OSError, ProcessLookupError):
+                                    pass  # Process already dead
+                        except Exception as cleanup_error:
+                            logger.error(f"Process cleanup failed: {cleanup_error}")
             
             return Response(
                 stream_with_context(generate()),
